@@ -4,8 +4,8 @@
  */
 
 import fs from 'fs'
-import path from 'path'
 import os from 'os'
+import { getHostsConfigPath } from './ensemble-paths'
 
 export interface Host {
   id: string
@@ -28,7 +28,7 @@ interface HostsConfig {
   organizationSetBy?: string
 }
 
-const HOSTS_CONFIG_PATH = path.join(os.homedir(), '.aimaestro', 'hosts.json')
+const HOSTS_CONFIG_PATH = getHostsConfigPath()
 let cachedHosts: Host[] | null = null
 
 export function getSelfHostId(): string {

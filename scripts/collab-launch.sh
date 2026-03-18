@@ -6,6 +6,7 @@ set -euo pipefail
 CWD="${1:-.}"
 TASK="${2:?Usage: collab-launch.sh <cwd> <task>}"
 API="http://localhost:23000"
+HOST_ID="${ENSEMBLE_HOST_ID:-local}"
 
 # ─── Colors ───
 G='\033[92m'; C='\033[96m'; D='\033[2m'; W='\033[97m'; BD='\033[1m'; R='\033[0m'
@@ -34,14 +35,14 @@ fi
 # ─── 2. Create team (use env vars to avoid quoting hell) ───
 TEAM_NAME="collab-$(date +%s)"
 PAYLOAD_FILE=$(mktemp)
-TNAME="$TEAM_NAME" TDESC="$TASK" TCWD="$CWD" PFILE="$PAYLOAD_FILE" python3 -c "
+TNAME="$TEAM_NAME" TDESC="$TASK" TCWD="$CWD" THOST="$HOST_ID" PFILE="$PAYLOAD_FILE" python3 -c "
 import json, os
 json.dump({
     'name': os.environ['TNAME'],
     'description': os.environ['TDESC'],
     'agents': [
-        {'program': 'codex', 'role': 'lead', 'hostId': 'm4promichel'},
-        {'program': 'claude code', 'role': 'worker', 'hostId': 'm4promichel'}
+        {'program': 'codex', 'role': 'lead', 'hostId': os.environ['THOST']},
+        {'program': 'claude code', 'role': 'worker', 'hostId': os.environ['THOST']}
     ],
     'feedMode': 'live',
     'workingDirectory': os.environ['TCWD']

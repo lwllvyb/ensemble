@@ -3,10 +3,18 @@ import path from 'path'
 import os from 'os'
 import { v4 as uuidv4 } from 'uuid'
 import type { OrchestraTeam, OrchestraMessage, CreateTeamRequest } from '../types/orchestra'
+import { getOrchestraDataDir } from './ensemble-paths'
 
-const ORCHESTRA_DIR = path.join(os.homedir(), '.aimaestro', 'orchestra')
+const ORCHESTRA_DIR = getOrchestraDataDir()
 const TEAMS_FILE = path.join(ORCHESTRA_DIR, 'teams.json')
 const MESSAGES_DIR = path.join(ORCHESTRA_DIR, 'messages')
+
+function getCreatedBy(): string {
+  return process.env.ENSEMBLE_CREATED_BY?.trim()
+    || process.env.USER
+    || process.env.LOGNAME
+    || os.hostname()
+}
 
 function ensureDir(dir: string): void {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
@@ -42,7 +50,7 @@ export function createTeam(request: CreateTeamRequest): OrchestraTeam {
       hostId: a.hostId || '',
       status: 'spawning' as const,
     })),
-    createdBy: 'michel',
+    createdBy: getCreatedBy(),
     createdAt: new Date().toISOString(),
     feedMode: request.feedMode || 'live',
   }

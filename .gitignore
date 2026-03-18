@@ -1,2 +1,28 @@
+# Dependencies
 node_modules/
+
+# Build output
 dist/
+
+# Environment & secrets
+.env
+.env.local
+.env.*.local
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Runtime data
+*.log
+/tmp/
+
+# JSONL persistence files (local data)
+*.jsonl
