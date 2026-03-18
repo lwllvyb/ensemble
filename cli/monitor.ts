@@ -280,6 +280,7 @@ class Monitor {
       case 'q': case 'Q':
         this.cleanup()
         process.exit(0)
+        break // eslint: no-fallthrough (process.exit above, but lint can't detect)
       case 'd': case 'D':
         // Disband team
         this.disbandTeam()
@@ -508,7 +509,7 @@ class Monitor {
 
     // First: split content into logical segments
     // Detect patterns like "**1." or numbered items or "---" as block separators
-    let content = raw
+    const content = raw
       // Normalize: turn "**N." patterns into newlines for list items
       .replace(/\*\*(\d+)\.\s*/g, '\n\n$1. ')
       // Turn "---" separators into blank lines
@@ -553,20 +554,22 @@ class Monitor {
             const num = numMatch[1]
             const rest = numMatch[2]
             const prefix = `${color.bold}${color.brightWhite}${num}.${rst} `
-            const wrapped = this.wrap(`${txt}${rest}${rst}`, width - 4)
-            lines.push(`${prefix}${wrapped[0]}`)
+            const wrapped = this.wrapPlain(rest, width - 4)
+            lines.push(`${prefix}${txt}${wrapped[0]}${rst}`)
             for (let i = 1; i < wrapped.length; i++) {
-              lines.push(`   ${wrapped[i]}`)
+              lines.push(`   ${txt}${wrapped[i]}${rst}`)
             }
           }
         } else if (isSubPoint) {
-          const wrapped = this.wrap(`${color.dim}${line}${rst}`, width - 4)
+          const wrapped = this.wrapPlain(line, width - 4)
           for (const w of wrapped) {
-            lines.push(`   ${w}`)
+            lines.push(`   ${color.dim}${w}${rst}`)
           }
         } else {
-          const wrapped = this.wrap(`${txt}${line}${rst}`, width)
-          lines.push(...wrapped)
+          const wrapped = this.wrapPlain(line, width)
+          for (const w of wrapped) {
+            lines.push(`${txt}${w}${rst}`)
+          }
         }
       }
     }
@@ -574,42 +577,24 @@ class Monitor {
     return lines
   }
 
-  private wrap(text: string, width: number): string[] {
-    // Strip ANSI for length calculation
-    const plain = text.replace(/\x1b\[[0-9;]*m/g, '')
-    if (plain.length <= width) return [text]
+  private wrapPlain(text: string, width: number): string[] {
+    // Strip any existing ANSI codes for clean wrapping
+    // eslint-disable-next-line no-control-regex
+    const clean = text.replace(/\x1b\[[0-9;]*m/g, '')
+    if (clean.length <= width) return [clean]
 
     const lines: string[] = []
-    // We need to wrap by visual length, preserving ANSI codes
-    let remaining = text
-    let remainingPlain = plain
+    let remaining = clean
 
-    while (remainingPlain.length > 0) {
-      if (remainingPlain.length <= width) {
+    while (remaining.length > 0) {
+      if (remaining.length <= width) {
         lines.push(remaining)
         break
       }
-
-      // Find break point in plain text
-      let breakAt = remainingPlain.lastIndexOf(' ', width)
+      let breakAt = remaining.lastIndexOf(' ', width)
       if (breakAt <= 0) breakAt = width
-
-      // Map plain-text position back to ANSI-included position
-      let plainIdx = 0
-      let realIdx = 0
-      while (plainIdx < breakAt && realIdx < remaining.length) {
-        if (remaining[realIdx] === '\x1b') {
-          // Skip ANSI sequence
-          const end = remaining.indexOf('m', realIdx)
-          if (end !== -1) { realIdx = end + 1; continue }
-        }
-        plainIdx++
-        realIdx++
-      }
-
-      lines.push(remaining.slice(0, realIdx))
-      remaining = remaining.slice(realIdx).replace(/^\s/, '')
-      remainingPlain = remainingPlain.slice(breakAt).replace(/^\s/, '')
+      lines.push(remaining.slice(0, breakAt))
+      remaining = remaining.slice(breakAt).trimStart()
     }
 
     return lines
@@ -625,6 +610,7 @@ class Monitor {
   }
 
   private stripAnsi(str: string): string {
+    // eslint-disable-next-line no-control-regex
     return str.replace(/\x1b\[[0-9;]*m/g, '')
   }
 }
