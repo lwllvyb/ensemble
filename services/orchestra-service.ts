@@ -242,26 +242,42 @@ export async function sendTeamMessage(
   }
   appendMessage(teamId, message)
 
-  if (to !== 'team') {
-    const targetAgent = team.agents.find(a => a.name === to)
-    if (targetAgent?.status === 'active') {
-      try {
-        const sessionName = `${team.name}-${to}`
-        if (targetAgent.hostId && !isSelf(targetAgent.hostId)) {
-          const host = getHostById(targetAgent.hostId)
-          if (host) await postRemoteSessionCommand(host.url, sessionName, content)
-        } else {
-          const runtime = getRuntime()
-          await runtime.sendKeys(sessionName, content, { literal: true, enter: true })
-        }
-      } catch (err) {
-        const reason = err instanceof Error ? err.message : String(err)
-        appendMessage(teamId, {
-          id: uuidv4(), teamId, from: 'orchestra', to: 'team',
-          content: `❌ Delivery to ${to} failed: ${reason}`,
-          type: 'chat', timestamp: new Date().toISOString(),
-        })
+  // Determine which agents should receive this message in their tmux pane
+  const sender = from || 'user'
+  const recipients = to === 'team'
+    ? team.agents.filter(a => a.status === 'active' && a.name !== sender)
+    : team.agents.filter(a => a.status === 'active' && a.name === to)
+
+  const runtime = getRuntime()
+  const isCodex = (program: string) => program.toLowerCase().includes('codex')
+
+  for (const targetAgent of recipients) {
+    try {
+      const sessionName = `${team.name}-${targetAgent.name}`
+      // Wrap message with sender context + response nudge
+      const deliveryText = [
+        `[Team message from ${sender}]: ${content}`,
+        `→ Respond with team-say. Then run team-read to check for more messages.`,
+      ].join('\n')
+
+      if (targetAgent.hostId && !isSelf(targetAgent.hostId)) {
+        const host = getHostById(targetAgent.hostId)
+        if (host) await postRemoteSessionCommand(host.url, sessionName, deliveryText)
+      } else if (isCodex(targetAgent.program)) {
+        // Codex works better with paste-buffer for multi-line input
+        const tmpFile = `/tmp/orchestra-delivery-${sessionName}.txt`
+        fs.writeFileSync(tmpFile, deliveryText)
+        await runtime.pasteFromFile(sessionName, tmpFile)
+      } else {
+        await runtime.sendKeys(sessionName, deliveryText, { literal: true, enter: true })
       }
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err)
+      appendMessage(teamId, {
+        id: uuidv4(), teamId, from: 'orchestra', to: 'team',
+        content: `❌ Delivery to ${targetAgent.name} failed: ${reason}`,
+        type: 'chat', timestamp: new Date().toISOString(),
+      })
     }
   }
 
@@ -271,8 +287,6 @@ export async function sendTeamMessage(
 export async function disbandTeam(teamId: string): Promise<ServiceResult<{ team: OrchestraTeam }>> {
   const team = getTeam(teamId)
   if (!team) return { error: 'Team not found', status: 404 }
-
-  const runtime = getRuntime()
 
   for (const agent of team.agents) {
     if (agent.status === 'active') {
