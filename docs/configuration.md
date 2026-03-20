@@ -2,6 +2,8 @@
 title: Configuration
 ---
 
+[Home](index) | [Getting Started](getting-started) | [Configuration](configuration) | [API](api) | [CLI](cli) | [Scripts](collab-scripts) | [Architecture](architecture)
+
 # Configuration
 
 ## Environment variables
@@ -11,7 +13,6 @@ title: Configuration
 | `ENSEMBLE_PORT` | `23000` | Server listening port |
 | `ENSEMBLE_URL` | `http://localhost:23000` | CLI target URL |
 | `ENSEMBLE_DATA_DIR` | `~/.aimaestro` | Data directory for team persistence |
-| `ENSEMBLE_HOST_ID` | `local` | Host identifier for agent spawning |
 | `ENSEMBLE_CORS_ORIGIN` | localhost only | Comma-separated allowed CORS origins |
 | `ENSEMBLE_PROJECT` | auto-detect | Project name for summaries |
 | `ENSEMBLE_AGENTS_CONFIG` | `./agents.json` | Path to custom agents config |
@@ -26,7 +27,6 @@ title: Configuration
 
 ```bash
 ENSEMBLE_PORT=23000
-ENSEMBLE_HOST_ID=macbook
 ENSEMBLE_TELEGRAM_BOT_TOKEN=123456:ABC-DEF
 ENSEMBLE_TELEGRAM_CHAT_ID=your-chat-id
 ```
@@ -230,8 +230,26 @@ When enabled:
 Ensemble is designed for **local development use**. Be aware:
 
 - No built-in API authentication (rate limiting by IP only)
-- Agents run with permissive flags (`--dangerously-skip-permissions`, `--full-auto`)
+- Agents run with permissive flags to support unattended execution
 - Server binds to localhost by default
 - Do **not** expose to the internet without adding authentication
 
 For production use, consider running behind a reverse proxy with auth.
+
+### Why agents need permissive flags
+
+Ensemble agents run autonomously inside `tmux` sessions without a human at the terminal. The flags in `agents.json` remove interactive confirmation prompts so the agents can actually complete work:
+
+| Flag | Agent | Purpose |
+|---|---|---|
+| `--dangerously-skip-permissions` | Claude Code | Allows tool execution, file edits, and shell commands without interactive permission prompts. |
+| `--full-auto` | Codex | Enables fully autonomous execution without confirmation prompts. |
+
+These flags are acceptable in the ensemble context because:
+
+- The server binds to `127.0.0.1` only
+- Agents operate inside the working directory you specify
+- Each team is isolated in its own `tmux` session
+- You can monitor agent behavior live via the TUI and message feed
+
+If you add custom agents, grant only the minimum flags required for autonomous operation.

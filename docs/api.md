@@ -2,9 +2,11 @@
 title: API Reference
 ---
 
+[Home](index) | [Getting Started](getting-started) | [Configuration](configuration) | [API](api) | [CLI](cli) | [Scripts](collab-scripts) | [Architecture](architecture)
+
 # API Reference
 
-Base URL: `http://localhost:23000` (configurable via `ENSEMBLE_PORT`)
+Base URL: `http://127.0.0.1:23000` (configurable via `ENSEMBLE_PORT`)
 
 Rate limit: 100 requests per 60 seconds per IP.
 
@@ -47,13 +49,13 @@ curl -X POST http://localhost:23000/api/ensemble/teams \
 ```
 
 **Required fields:**
+- `name` (string) — team name
 - `description` (string) — task for the team
 - `agents` (array) — at least one agent with `program` field
 
 **Optional fields:**
-- `name` (string) — team name (auto-generated if omitted)
 - `workingDirectory` (string) — project path for agents
-- `feedMode` (`"live"` or `"batch"`) — message delivery mode
+- `feedMode` (`"silent"`, `"summary"`, or `"live"`) — message delivery mode
 - `useWorktrees` (boolean) — isolate agents in git worktrees
 - `templateName` (string) — use a collab template (`review`, `implement`, `debug`)
 - `staged` (boolean) — enable staged plan/execute/verify workflow
@@ -68,7 +70,7 @@ Returns `400` for malformed JSON, `429` for rate limit exceeded.
 ### `GET /api/ensemble/teams` — List teams
 
 ```bash
-curl http://localhost:23000/api/ensemble/teams
+curl http://127.0.0.1:23000/api/ensemble/teams
 ```
 
 **Response:** `{ "teams": EnsembleTeam[] }`
@@ -78,7 +80,7 @@ curl http://localhost:23000/api/ensemble/teams
 ### `GET /api/ensemble/teams/:id` — Get team details
 
 ```bash
-curl http://localhost:23000/api/ensemble/teams/abc-123
+curl http://127.0.0.1:23000/api/ensemble/teams/abc-123
 ```
 
 **Response:** `{ "team": EnsembleTeam, "messages": EnsembleMessage[] }`
@@ -88,7 +90,7 @@ curl http://localhost:23000/api/ensemble/teams/abc-123
 ### `POST /api/ensemble/teams/:id` — Send message
 
 ```bash
-curl -X POST http://localhost:23000/api/ensemble/teams/abc-123 \
+curl -X POST http://127.0.0.1:23000/api/ensemble/teams/abc-123 \
   -H "Content-Type: application/json" \
   -d '{
     "from": "user",
@@ -99,7 +101,7 @@ curl -X POST http://localhost:23000/api/ensemble/teams/abc-123 \
 
 **Fields:**
 - `content` (string, required) — message text
-- `to` (string, required) — recipient agent name
+- `to` (string) — recipient agent name; defaults to `"team"` when omitted or empty
 - `from` (string) — sender name (default: `"user"`)
 
 Returns `400` for malformed JSON.
@@ -109,7 +111,7 @@ Returns `400` for malformed JSON.
 ### `DELETE /api/ensemble/teams/:id` — Disband team
 
 ```bash
-curl -X DELETE http://localhost:23000/api/ensemble/teams/abc-123
+curl -X DELETE http://127.0.0.1:23000/api/ensemble/teams/abc-123
 ```
 
 Stops all agents, generates summary, cleans up. Also available as `POST /api/ensemble/teams/:id/disband`.
@@ -152,9 +154,9 @@ Use the `since` parameter for efficient polling — avoids re-fetching the entir
   agents: EnsembleTeamAgent[]
   createdBy: string
   createdAt: string // ISO 8601
-  feedMode: 'live' | 'batch'
-  workingDirectory?: string
-  useWorktrees?: boolean
+  completedAt?: string
+  feedMode: 'silent' | 'summary' | 'live'
+  result?: EnsembleTeamResult
 }
 ```
 
@@ -162,12 +164,26 @@ Use the `since` parameter for efficient polling — avoids re-fetching the entir
 
 ```typescript
 {
+  agentId: string
   program: string
+  name: string
   role: string
   hostId: string
   status: 'spawning' | 'active' | 'idle' | 'done' | 'failed'
   worktreePath?: string
   worktreeBranch?: string
+}
+```
+
+### EnsembleTeamResult
+
+```typescript
+{
+  summary: string
+  decisions: string[]
+  discoveries: string[]
+  filesChanged: string[]
+  duration: number
 }
 ```
 

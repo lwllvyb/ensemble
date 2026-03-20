@@ -2,6 +2,8 @@
 title: Collab Scripts
 ---
 
+[Home](index) | [Getting Started](getting-started) | [Configuration](configuration) | [API](api) | [CLI](cli) | [Scripts](collab-scripts) | [Architecture](architecture)
+
 # Collab Scripts
 
 Shell scripts for launching and managing teams, designed for integration with Claude Code and other AI-assisted workflows.

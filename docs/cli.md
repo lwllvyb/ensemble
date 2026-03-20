@@ -2,6 +2,8 @@
 title: CLI Reference
 ---
 
+[Home](index) | [Getting Started](getting-started) | [Configuration](configuration) | [API](api) | [CLI](cli) | [Scripts](collab-scripts) | [Architecture](architecture)
+
 # CLI Reference
 
 ## ensemble CLI

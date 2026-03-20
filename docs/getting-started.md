@@ -2,6 +2,8 @@
 title: Getting Started
 ---
 
+[Home](index) | [Getting Started](getting-started) | [Configuration](configuration) | [API](api) | [CLI](cli) | [Scripts](collab-scripts) | [Architecture](architecture)
+
 # Getting Started
 
 ## Prerequisites
@@ -11,7 +13,11 @@ title: Getting Started
 | **Node.js 18+** | Runtime for the ensemble server |
 | **tmux** | Agent sessions run in tmux panes |
 | **Python 3.6+** | Used by collab scripts for message parsing |
+| **curl** | Used in examples to interact with the API |
+| **macOS or Linux** | `tmux` and shell scripts require a Unix environment |
 | **At least one AI agent CLI** | e.g. `claude`, `codex`, `aider`, `gemini` |
+
+> Ensemble relies on `tmux` sessions and Unix shell scripts. It runs on macOS and Linux only. Windows, including WSL, is not tested or supported.
 
 ### Install tmux
 
