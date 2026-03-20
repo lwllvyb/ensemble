@@ -97,6 +97,7 @@ export class StagedWorkflowManager {
   private readonly sleep: (ms: number) => Promise<void>
   private readonly now: () => Date
   private readonly agents: ActiveAgent[]
+  private messageCursor: string | undefined
 
   constructor(private readonly options: StagedWorkflowManagerOptions) {
     this.config = resolveConfig(options.config)
@@ -126,6 +127,9 @@ export class StagedWorkflowManager {
         : `PLAN phase timed out after ${Math.round(this.config.planTimeoutMs / 1000)}s — advancing to EXEC`,
     )
 
+    // Reset cursor and cache for next phase
+    this.resetCursor()
+
     this.log('exec', 'Starting EXEC phase — agents may now implement')
     const execStartedAt = new Date().toISOString()
     await Promise.all(this.agents.map((agent, index) => this.deliverExecPrompt(agent, index)))
@@ -140,6 +144,9 @@ export class StagedWorkflowManager {
         ? 'All agents completed implementation — advancing to VERIFY'
         : `EXEC phase timed out after ${Math.round(this.config.execTimeoutMs / 1000)}s — advancing to VERIFY`,
     )
+
+    // Reset cursor and cache for next phase
+    this.resetCursor()
 
     this.log('verify', 'Starting VERIFY phase — agents review each other\'s work')
     await Promise.all(this.agents.map((agent, index) => this.deliverVerifyPrompt(agent, index)))
@@ -197,19 +204,42 @@ export class StagedWorkflowManager {
     await runtime.sendKeys(sessionName, text, { literal: true, enter: true })
   }
 
+  private resetCursor(): void {
+    this.messageCursor = undefined
+    this.messageCache = []
+  }
+
+  /**
+   * Fetch messages incrementally using a cursor (consistent with monitor.ts).
+   * On first call for a phase, uses sinceTimestamp. Subsequent polls advance
+   * the cursor to the latest message timestamp to avoid re-reading old data.
+   */
+  private fetchMessagesSince(sinceTimestamp: string): ReturnType<typeof getMessages> {
+    const since = this.messageCursor ?? sinceTimestamp
+    const messages = getMessages(this.options.team.id, since)
+    if (messages.length > 0) {
+      this.messageCursor = messages[messages.length - 1].timestamp
+    }
+    return messages
+  }
+
+  private messageCache: ReturnType<typeof getMessages> = []
+
   private agentsSharedPlans(sinceTimestamp: string): boolean {
-    const messages = getMessages(this.options.team.id, sinceTimestamp)
+    const newMessages = this.fetchMessagesSince(sinceTimestamp)
+    this.messageCache.push(...newMessages)
     return this.agentNames().every(name =>
-      messages.some(message =>
+      this.messageCache.some(message =>
         message.from === name && PLAN_SHARED_PATTERNS.some(pattern => pattern.test(message.content))
       ),
     )
   }
 
   private agentsCompletedExec(sinceTimestamp: string): boolean {
-    const messages = getMessages(this.options.team.id, sinceTimestamp)
+    const newMessages = this.fetchMessagesSince(sinceTimestamp)
+    this.messageCache.push(...newMessages)
     return this.agentNames().every(name =>
-      messages.some(message =>
+      this.messageCache.some(message =>
         message.from === name && EXEC_DONE_PATTERNS.some(pattern => pattern.test(message.content))
       ),
     )
