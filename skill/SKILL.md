@@ -9,7 +9,9 @@ metadata:
 
 # Collab: Autonomous AI Team Collaboration
 
-Launch a Codex + Claude team. Scripts live in `~/Documents/ensemble/scripts/`. Runtime files namespaced under `/tmp/ensemble/<TEAM_ID>/`.
+**Language rule:** ALWAYS respond in the same language the user used to invoke /collab. If the user writes in English, all your output (status updates, summaries, everything) must be in English. If Dutch, respond in Dutch. Never mix languages.
+
+Launch a Codex + Claude team. Scripts live in `__ENSEMBLE_DIR__/scripts/`. Runtime files namespaced under `/tmp/ensemble/<TEAM_ID>/`.
 
 ## Path Convention
 All collab artifacts live in `/tmp/ensemble/<TEAM_ID>/`:
@@ -30,7 +32,7 @@ if [ -n "$TMUX" ]; then echo "TMUX_YES"; else echo "TMUX_NO"; fi
 
 ### Step 1: Launch the team
 ```bash
-~/Documents/ensemble/scripts/collab-launch.sh "$(pwd)" "$TASK_DESCRIPTION"
+collab-launch "$(pwd)" "$TASK_DESCRIPTION"
 ```
 
 Extract TEAM_ID:
@@ -40,7 +42,7 @@ TEAM_ID=$(cat /tmp/collab-team-id.txt)
 
 ### Step 2: Tell the user where the monitor is
 
-If `TMUX_YES`: "Team is live in het rechter tmux-paneel."
+If `TMUX_YES`: "Team is live in the right tmux pane."
 If `TMUX_NO`: "`tmux attach -t ensemble-$TEAM_ID` — live TUI monitor (steer, disband, scroll)"
 
 ### Step 3: Monitoring — the user MUST see the conversation
@@ -53,7 +55,7 @@ Use `collab-poll.sh` — a single-shot poller that tracks state automatically an
 
 **Poll command:**
 ```bash
-~/Documents/ensemble/scripts/collab-poll.sh "<TEAM_ID>" --sleep <seconds>
+collab-poll "<TEAM_ID>" --sleep <seconds>
 ```
 
 Output format: `sender\tcontent` lines, ending with one of:
@@ -69,7 +71,7 @@ After each poll, present the new messages to the user like this:
 >
 > **claude-2**: [message content]
 
-Use markdown bold for agent names. Show the FULL message content (up to 500 chars), not truncated summaries. Between polls, add a brief status line like "Team is aan het werk... volgende check over 15s."
+Use markdown bold for agent names. Show the FULL message content (up to 500 chars), not truncated summaries. Between polls, add a brief status line like "Team is working... next check in 15s."
 
 **Polling cadence:**
 - First poll: `--sleep 10`

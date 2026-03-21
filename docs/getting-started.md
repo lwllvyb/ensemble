@@ -43,19 +43,29 @@ npm install -g @anthropic-ai/claude-code
 # Codex (OpenAI)
 npm install -g @openai/codex
 
-# Aider (Python-based)
+# Aider (Python-based) — experimental
 pip install aider-chat
 ```
 
-Each agent CLI manages its own API keys. Make sure they're configured in your shell:
+> **Tested combination:** Claude Code + Codex is the primary tested setup. Other agent combinations (Aider, Gemini) are experimental and may require tweaking `agents.json`.
 
-| Agent | Auth setup |
-|---|---|
-| **Claude Code** | Run `claude auth login` or set `ANTHROPIC_API_KEY` |
-| **Codex** | Set `OPENAI_API_KEY` in your environment |
-| **Aider** | Set `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` |
+Each agent CLI manages its own API keys. Make sure they're configured before running ensemble:
 
-> **Tip:** Test that your agent CLI works standalone before using it with ensemble. For example, run `claude --version` or `codex --version` to verify installation.
+| Agent | Auth setup | Where to get a key |
+|---|---|---|
+| **Claude Code** | Run `claude auth login` (opens browser) or set `ANTHROPIC_API_KEY` | [console.anthropic.com](https://console.anthropic.com/) |
+| **Codex** | Set `OPENAI_API_KEY` in your shell profile | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) |
+| **Aider** | Set `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` | See links above |
+
+```bash
+# Example: add to your ~/.zshrc or ~/.bashrc
+export OPENAI_API_KEY="sk-..."
+export ANTHROPIC_API_KEY="sk-ant-..."
+```
+
+> **Cost note:** Each agent uses its own API credits. A typical collab session (two agents, ~10 minutes) costs roughly $0.10–$0.50 depending on task complexity and models used.
+
+> **Tip:** Test that your agent CLI works standalone before using it with ensemble. Run `claude --version` or `codex --version` to verify installation, then try a simple prompt to confirm your API key works.
 
 ---
 

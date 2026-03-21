@@ -2,7 +2,7 @@
   "codex": {
     "name": "codex",
     "command": "codex",
-    "flags": ["--full-auto", "-m", "gpt-5.4"],
+    "flags": ["--full-auto"],
     "readyMarker": "›",
     "inputMethod": "pasteFromFile",
     "color": "blue",

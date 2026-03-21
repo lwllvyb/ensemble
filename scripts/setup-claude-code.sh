@@ -21,7 +21,7 @@ echo ""
 # ─── 1. Install skill ───
 mkdir -p "$SKILL_DIR"
 if [ -f "$REPO_DIR/skill/SKILL.md" ]; then
-  cp "$REPO_DIR/skill/SKILL.md" "$SKILL_DIR/SKILL.md"
+  sed "s|__ENSEMBLE_DIR__|${REPO_DIR}|g" "$REPO_DIR/skill/SKILL.md" > "$SKILL_DIR/SKILL.md"
   echo -e "  ${CHECK} Skill installed → ${D}${SKILL_DIR}/SKILL.md${R}"
 else
   echo -e "  \033[91m✗${R} skill/SKILL.md not found in repo"

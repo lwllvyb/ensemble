@@ -1,0 +1,15 @@
+{
+  "name": "vulnerable-api-demo",
+  "version": "1.0.0",
+  "description": "Demo API with intentional security issues — for ensemble demo only",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.17.1",
+    "jsonwebtoken": "^8.5.1",
+    "mysql": "^2.18.1",
+    "body-parser": "^1.19.0"
+  }
+}

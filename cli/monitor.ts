@@ -181,9 +181,9 @@ class Monitor {
   private readonly IDLE_THRESHOLD_MS = 60_000
 
   private readonly completionMenuOptions = [
-    { label: 'Samenvatting tonen', icon: '📋' },
-    { label: 'Team door laten werken', icon: '▶' },
-    { label: 'Bijsturen met nieuw doel', icon: '✎' },
+    { label: 'Show summary', icon: '📋' },
+    { label: 'Let team continue', icon: '▶' },
+    { label: 'Steer with new goal', icon: '✎' },
     { label: 'Disband team', icon: '✕' },
   ]
 
@@ -403,7 +403,7 @@ class Monitor {
         const msgs = agentMsgs.filter(m => m.from === agent)
         const first = msgs[0]?.content.replace(/\/tmp\/ensemble[-\w]*/g, '').trim() || ''
         const last = msgs[msgs.length - 1]?.content.replace(/\/tmp\/ensemble[-\w]*/g, '').trim() || ''
-        return `${agent} (${msgs.length} msgs):\n  Start: ${first.slice(0, 300)}\n  Eind: ${last.slice(0, 500)}`
+        return `${agent} (${msgs.length} msgs):\n  Start: ${first.slice(0, 300)}\n  End: ${last.slice(0, 500)}`
       }).join('\n\n')
 
       const fs = await import('fs')
@@ -427,15 +427,15 @@ class Monitor {
     this.completionMenuSelection = 0
 
     switch (choice) {
-      case 0: // Samenvatting tonen
+      case 0: // Show summary
         this.showInlineSummary = true
         this.render()
         break
-      case 1: // Team door laten werken — suppress menu for another 60s
+      case 1: // Let team continue — suppress menu for another 60s
         this.idleSuppressedUntil = Date.now() + this.IDLE_THRESHOLD_MS
         this.render()
         break
-      case 2: // Bijsturen met nieuw doel
+      case 2: // Steer with new goal
         this.inputMode = true
         this.inputTarget = 'team'
         this.inputBuffer = ''

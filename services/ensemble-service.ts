@@ -608,6 +608,11 @@ export async function sendTeamMessage(
   for (const targetAgent of recipients) {
     try {
       const sessionName = `${team.name}-${targetAgent.name}`
+
+      // Skip delivery if the agent's tmux pane no longer exists (agent finished and exited)
+      const paneAlive = await runtime.sessionExists(sessionName)
+      if (!paneAlive) continue
+
       // Wrap message with sender context + response nudge
       const deliveryText = [
         `[Team message from ${sender}]: ${content}`,
@@ -689,6 +694,9 @@ export async function writeDisbandSummary(teamId: string): Promise<void> {
 export async function disbandTeam(teamId: string): Promise<ServiceResult<{ team: EnsembleTeam }>> {
   const team = getTeam(teamId)
   if (!team) return { error: 'Team not found', status: 404 }
+
+  // Write summary before killing sessions so the Claude Code session can present it
+  await writeDisbandSummary(teamId)
 
   // Scrape token usage BEFORE killing sessions (tmux panes disappear on kill)
   const tokenUsageMap: Record<string, string> = {}

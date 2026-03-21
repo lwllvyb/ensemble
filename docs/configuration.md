@@ -42,7 +42,7 @@ The `agents.json` file defines which AI agents ensemble can spawn. Located in th
   "codex": {
     "name": "codex",
     "command": "codex",
-    "flags": ["--full-auto", "-m", "gpt-5.4"],
+    "flags": ["--full-auto"],
     "readyMarker": "›",
     "inputMethod": "pasteFromFile",
     "color": "blue",
@@ -58,6 +58,9 @@ The `agents.json` file defines which AI agents ensemble can spawn. Located in th
     "icon": "●"
   }
 }
+```
+
+> **Model selection:** By default, each agent uses its own default model. To specify a model, add it to the `flags` array — e.g., `["--full-auto", "-m", "o3"]` for Codex or `["--dangerously-skip-permissions", "--model", "sonnet"]` for Claude. Check each agent's docs for available models.
 ```
 
 ### Fields

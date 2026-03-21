@@ -24,6 +24,8 @@ Ensemble orchestrates multiple AI agents (Claude Code, Codex, Aider) into collab
 - Node.js 18+, Python 3.6+, [tmux](https://github.com/tmux/tmux), curl
 - At least one AI agent CLI installed (`claude`, `codex`, or `aider`)
 
+> **Note:** Currently only **Claude Code + Codex** is actively tested. Aider and Gemini support is experimental.
+
 ### Install & Run
 
 ```bash
