@@ -231,8 +231,11 @@ export class TmuxRuntime implements AgentRuntime {
     const sPath = filePath.replace(/[^a-zA-Z0-9\-_./~ ]/g, '')
     await execAsync(`tmux load-buffer -b "${bufName}" "${sPath}"`)
     await execAsync(`tmux paste-buffer -b "${bufName}" -t "${sName}"`)
-    // Small delay to let the TUI process the paste, then send Enter
-    await new Promise(r => setTimeout(r, 500))
+    // Delay to let the TUI process the paste, then send Enter twice
+    // (some TUIs like Gemini CLI need an extra Enter after paste)
+    await new Promise(r => setTimeout(r, 1000))
+    await execAsync(`tmux send-keys -t "${sName}" Enter`)
+    await new Promise(r => setTimeout(r, 300))
     await execAsync(`tmux send-keys -t "${sName}" Enter`)
     // Clean up buffer
     await execAsync(`tmux delete-buffer -b "${bufName}" 2>/dev/null || true`)

@@ -10,6 +10,7 @@ source "$SCRIPT_DIR/collab-paths.sh"
 
 CWD="${1:-.}"
 TASK="${2:?Usage: collab-launch.sh <cwd> <task>}"
+AGENTS="${3:-}"  # Optional: comma-separated agent names (e.g. "gemini,claude")
 API="http://localhost:23000"
 HOST_ID="${ENSEMBLE_HOST_ID:-local}"
 
@@ -40,15 +41,23 @@ fi
 # ─── 2. Create team (use env vars to avoid quoting hell) ───
 TEAM_NAME="collab-$(python3 -c 'import random,time; print(str(time.time_ns()//1000000)+"-"+str(random.randint(1000,9999)))')"
 PAYLOAD_FILE=$(mktemp)
-TNAME="$TEAM_NAME" TDESC="$TASK" TCWD="$CWD" THOST="$HOST_ID" PFILE="$PAYLOAD_FILE" python3 -c "
+TNAME="$TEAM_NAME" TDESC="$TASK" TCWD="$CWD" THOST="$HOST_ID" TAGENTS="$AGENTS" PFILE="$PAYLOAD_FILE" python3 -c "
 import json, os
+agents_str = os.environ.get('TAGENTS', '')
+if agents_str:
+    names = [a.strip() for a in agents_str.split(',')]
+    agents = [{'program': names[0], 'role': 'lead', 'hostId': os.environ['THOST']}]
+    for n in names[1:]:
+        agents.append({'program': n, 'role': 'worker', 'hostId': os.environ['THOST']})
+else:
+    agents = [
+        {'program': 'codex', 'role': 'lead', 'hostId': os.environ['THOST']},
+        {'program': 'claude code', 'role': 'worker', 'hostId': os.environ['THOST']}
+    ]
 json.dump({
     'name': os.environ['TNAME'],
     'description': os.environ['TDESC'],
-    'agents': [
-        {'program': 'codex', 'role': 'lead', 'hostId': os.environ['THOST']},
-        {'program': 'claude code', 'role': 'worker', 'hostId': os.environ['THOST']}
-    ],
+    'agents': agents,
     'feedMode': 'live',
     'workingDirectory': os.environ['TCWD']
 }, open(os.environ['PFILE'], 'w'))

@@ -105,7 +105,7 @@ export function createTeam(request: CreateTeamRequest): EnsembleTeam {
       status: 'forming',
       agents: request.agents.map((a, i) => ({
         agentId: '',
-        name: `${a.program.toLowerCase().includes('codex') ? 'codex' : 'claude'}-${i + 1}`,
+        name: `${a.program.toLowerCase().replace(/\s+/g, '-').split('-')[0]}-${i + 1}`,
         program: a.program,
         role: a.role || (i === 0 ? 'lead' : 'member'),
         hostId: a.hostId || '',
