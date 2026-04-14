@@ -21,7 +21,9 @@ if ! osascript -e 'tell application "System Events" to (name of processes) conta
 fi
 
 # Command that will run inside the new pane. Quote-safe: TEAM_ID is alphanumeric/hyphen.
-CMD="cd ${REPO_DIR@Q} && ./node_modules/.bin/tsx cli/monitor.ts ${TEAM_ID}"
+# Use printf %q instead of ${var@Q} — macOS /bin/bash is 3.2, @Q needs 4.4+.
+REPO_DIR_Q=$(printf '%q' "$REPO_DIR")
+CMD="cd $REPO_DIR_Q && ./node_modules/.bin/tsx cli/monitor.ts ${TEAM_ID}"
 
 case "$MODE" in
   split)
