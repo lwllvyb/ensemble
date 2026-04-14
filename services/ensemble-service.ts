@@ -41,13 +41,16 @@ interface ServiceResult<T> {
 }
 
 const IDLE_CHECK_INTERVAL_MS = 15_000
-const COMPLETION_SIGNAL_WINDOW_MS = 60_000
+const COMPLETION_SIGNAL_WINDOW_MS = 180_000
 const SINGLE_SIGNAL_IDLE_THRESHOLD_MS = 120_000
+const MIN_MESSAGES_BEFORE_AUTO_DISBAND = 10
 const COMPLETION_PATTERNS = [
   /(?:^|[^\p{L}\p{N}_])afgerond(?:[^\p{L}\p{N}_]|$)/iu,
-  /(?:^|[^\p{L}\p{N}_])done(?:[^\p{L}\p{N}_]|$)/iu,
-  /(?:^|[^\p{L}\p{N}_])complete(?:d)?(?:[^\p{L}\p{N}_]|$)/iu,
-  /(?:^|[^\p{L}\p{N}_])klaar(?:[^\p{L}\p{N}_]|$)/iu,
+  /(?:^|[^\p{L}\p{N}_])\bdone\b(?![.\w])/iu,
+  // "completed" but not ".completed" (method/property access) or "completion"
+  /(?<!\.)(?:^|[^\p{L}\p{N}_])completed(?:[^\p{L}\p{N}_]|$)/iu,
+  // "klaar" but not "klaar sta", "klaar ben", "klaar om", "klaar voor"
+  /(?:^|[^\p{L}\p{N}_])klaar(?!\s+(?:sta|ben|om|voor|zodra))(?:[^\p{L}\p{N}_]|$)/iu,
   /(?:^|\s)tot de volgende(?:\s|$)/i,
 ]
 
@@ -121,6 +124,9 @@ class EnsembleService {
     const nonEnsembleMessages = messages.filter(message => message.from !== 'ensemble')
     const lastMessage = nonEnsembleMessages[nonEnsembleMessages.length - 1]
     if (!lastMessage) return false
+
+    // Don't auto-disband until agents have exchanged enough messages
+    if (nonEnsembleMessages.length < MIN_MESSAGES_BEFORE_AUTO_DISBAND) return false
 
     // Robust timestamp handling: skip idle check if no timestamp available
     const lastTimestamp = lastMessage.timestamp

@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # open-iterm-monitor.sh — Open the collab TUI monitor in a native iTerm2 split pane.
-# Usage: open-iterm-monitor.sh <repo-dir> <team-id> [mode]
-#   mode: split (default) | tab | window
-#
-# Requires: macOS + iTerm2. Returns non-zero if iTerm2 is not available.
+# Usage: open-iterm-monitor.sh <repo-dir> <team-id> [split|tab|window]
 set -euo pipefail
 
 REPO_DIR="${1:?Usage: open-iterm-monitor.sh <repo-dir> <team-id> [split|tab|window]}"
 TEAM_ID="${2:?team-id required}"
 MODE="${3:-split}"
+
+LOG=/tmp/collab-iterm-last.log
+echo "=== $(date '+%F %T') open-iterm-monitor ($MODE) team=$TEAM_ID ===" > "$LOG"
 
 if [ "$(uname)" != "Darwin" ]; then
   echo "open-iterm-monitor: not macOS" >&2
@@ -20,36 +20,52 @@ if ! osascript -e 'tell application "System Events" to (name of processes) conta
   exit 3
 fi
 
-# Command that will run inside the new pane. Quote-safe: TEAM_ID is alphanumeric/hyphen.
-# Use printf %q instead of ${var@Q} — macOS /bin/bash is 3.2, @Q needs 4.4+.
 REPO_DIR_Q=$(printf '%q' "$REPO_DIR")
 CMD="cd $REPO_DIR_Q && ./node_modules/.bin/tsx cli/monitor.ts ${TEAM_ID}"
 
 case "$MODE" in
   split)
-    osascript <<OSA
+    if RESULT=$(osascript 2>>"$LOG" <<OSA
 tell application "iTerm2"
+  activate
+  delay 0.15
   if (count of windows) is 0 then
     create window with default profile
   end if
-  tell current window
+  set winCount to count of windows
+  set theWindow to first window
+  set winId to id of theWindow
+  tell theWindow
+    set tabCount to count of tabs
     tell current session
       set newSession to (split vertically with default profile)
+      set newId to id of newSession
       tell newSession
         write text "${CMD}"
       end tell
     end tell
   end tell
+  return "windows=" & winCount & " window_id=" & winId & " tabs_in_window=" & tabCount & " new_session_id=" & newId
 end tell
 OSA
+    ); then
+      echo "rc=0 result=$RESULT" >> "$LOG"
+      echo "$RESULT"
+    else
+      RC=$?
+      echo "rc=$RC — zie $LOG" >&2
+      exit 5
+    fi
     ;;
   tab)
-    osascript <<OSA
+    osascript 2>>"$LOG" <<OSA
 tell application "iTerm2"
+  activate
+  delay 0.1
   if (count of windows) is 0 then
     create window with default profile
   end if
-  tell current window
+  tell first window
     set newTab to (create tab with default profile)
     tell current session of newTab
       write text "${CMD}"
@@ -59,8 +75,10 @@ end tell
 OSA
     ;;
   window)
-    osascript <<OSA
+    osascript 2>>"$LOG" <<OSA
 tell application "iTerm2"
+  activate
+  delay 0.1
   set newWindow to (create window with default profile)
   tell current session of newWindow
     write text "${CMD}"
