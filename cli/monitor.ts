@@ -11,6 +11,8 @@
 
 import http from 'http'
 import readline from 'readline'
+import fs from 'fs'
+import { spawnSync } from 'child_process'
 import { resolveAgentProgram } from '../lib/agent-config'
 
 // ─────────────────────────── ANSI ESCAPE CODES ───────────────────────────
@@ -217,6 +219,13 @@ class Monitor {
       try {
         await this.fetchTeam()
         await this.fetchMessages()
+        // Team was disbanded elsewhere (auto-disband via sentinel, or
+        // another session pressed 'd') — exit cleanly so the iTerm split
+        // pane closes via closeITermSessionIfAny().
+        if (this.team?.status === 'disbanded') {
+          this.cleanup()
+          process.exit(0)
+        }
         if (this.messages.length !== this.lastMessageCount) {
           this.lastMessageCount = this.messages.length
           this.scrollOffset = 0 // auto-scroll to bottom
@@ -453,6 +462,44 @@ class Monitor {
     process.stdout.write(cursor.clearScreen)
     process.stdout.write(cursor.home)
     process.stdin.setRawMode?.(false)
+    this.closeITermSessionIfAny()
+  }
+
+  // If we were launched into an iTerm2 split pane, close that pane so the
+  // split disappears like a tmux pane does on exit. No-op otherwise.
+  // iTerm2 AppleScript does not support `whose id = ...` filtering on
+  // sessions — we must walk windows/tabs/sessions and match by id string.
+  private closeITermSessionIfAny() {
+    try {
+      const idFile = `/tmp/ensemble/${this.teamId}/iterm-session-id`
+      if (!fs.existsSync(idFile)) return
+      const sessionId = fs.readFileSync(idFile, 'utf8').trim()
+      if (!sessionId) return
+      // We cannot close the pane from inside the pane while our node
+      // process is still the foreground job — iTerm2 with "Prompt before
+      // closing a session that has a running subprocess" will block the
+      // close. So we schedule a detached bash helper that waits ~0.8s
+      // (long enough for this process to exit and the shell to return to
+      // its prompt) and THEN calls osascript.
+      const osa = `tell application "iTerm2"
+  repeat with w in windows
+    repeat with t in tabs of w
+      repeat with s in sessions of t
+        if (id of s as string) is "${sessionId}" then
+          close s
+          return
+        end if
+      end repeat
+    end repeat
+  end repeat
+end tell`
+      const osaEscaped = osa.replace(/'/g, `'\\''`)
+      spawnSync(
+        'bash',
+        ['-c', `(sleep 0.8 && osascript -e '${osaEscaped}' >/dev/null 2>&1) &`],
+        { stdio: 'ignore', timeout: 2000 },
+      )
+    } catch { /* best effort */ }
   }
 
   // ─── RENDERING ──────────────────────────────────────────────────────

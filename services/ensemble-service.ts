@@ -21,7 +21,7 @@ import { getRuntime } from '../lib/agent-runtime'
 import { resolveAgentProgram } from '../lib/agent-config'
 import { AgentWatchdog } from '../lib/agent-watchdog'
 import {
-  collabPromptFile, collabDeliveryFile, collabSummaryFile,
+  collabPromptFile, collabDeliveryFile, collabSummaryFile, collabMessagesFile,
   collabRuntimeDir, collabFinishedMarker, collabBridgePosted,
   collabBridgeResult, ensureCollabDirs,
 } from '../lib/collab-paths'
@@ -44,6 +44,10 @@ const IDLE_CHECK_INTERVAL_MS = 15_000
 const COMPLETION_SIGNAL_WINDOW_MS = 180_000
 const SINGLE_SIGNAL_IDLE_THRESHOLD_MS = 120_000
 const MIN_MESSAGES_BEFORE_AUTO_DISBAND = 10
+// Explicit sentinel: when both agents send this exact marker as a full
+// message, the team auto-disbands immediately — no idle wait, no minimum
+// message count. Agents are instructed to use it in buildPromptPreview.
+const EXPLICIT_DONE_SENTINEL = '<<COLLAB_DONE>>'
 const COMPLETION_PATTERNS = [
   /(?:^|[^\p{L}\p{N}_])afgerond(?:[^\p{L}\p{N}_]|$)/iu,
   /(?:^|[^\p{L}\p{N}_])\bdone\b(?![.\w])/iu,
@@ -124,6 +128,18 @@ class EnsembleService {
     const nonEnsembleMessages = messages.filter(message => message.from !== 'ensemble')
     const lastMessage = nonEnsembleMessages[nonEnsembleMessages.length - 1]
     if (!lastMessage) return false
+
+    // Explicit sentinel path: if at least two DIFFERENT active agents have
+    // sent the exact done sentinel, disband immediately. This bypasses the
+    // min-message count and the idle wait — the agents have explicitly
+    // agreed the task is done.
+    const activeNames = new Set(team.agents.filter(a => a.status === 'active').map(a => a.name))
+    const sentinelSenders = new Set(
+      messages
+        .filter(m => activeNames.has(m.from) && m.content.trim() === EXPLICIT_DONE_SENTINEL)
+        .map(m => m.from),
+    )
+    if (sentinelSenders.size >= 2) return true
 
     // Don't auto-disband until agents have exchanged enough messages
     if (nonEnsembleMessages.length < MIN_MESSAGES_BEFORE_AUTO_DISBAND) return false
@@ -305,6 +321,10 @@ export function buildPromptPreview(params: {
     `4. After EVERY team-say, run team-read to check for responses`,
     `5. If teammate shared findings, RESPOND to them`,
     `6. Keep alternating: analyze, share, read, respond, analyze`,
+    `DONE PROTOCOL (important):`,
+    `7. When you believe the task is fully converged and there is nothing substantive left to say, explicitly propose closure to your teammate in a normal team-say message ("I think we're done because X — agree?").`,
+    `8. Only once your teammate has confirmed agreement, send a FINAL team-say whose message is EXACTLY the sentinel <<COLLAB_DONE>> (nothing else, no quotes, no prose). As soon as both teammates have sent <<COLLAB_DONE>>, the system auto-disbands the team and writes the summary — so do not send it prematurely.`,
+    `9. Before sending <<COLLAB_DONE>>, make sure the important conclusions (recommendation, rationale, build list, layout, decisions) are actually present as long team-say messages in the transcript — that is what the summary will preserve. Do not keep insights only in your head.`,
     `Start NOW: greet your teammate with team-say, then begin.`,
   ].join(' ')
 }
@@ -680,19 +700,32 @@ export async function writeDisbandSummary(teamId: string): Promise<void> {
       })
   )
 
+  const cleanContent = (s: string) => s.replace(/\/tmp\/ensemble[-\w]*/g, '').trim()
+
   const summaryText = agents.map(agent => {
-    const msgs = agentMsgs.filter(m => m.from === agent)
-    const first = msgs[0]?.content.replace(/\/tmp\/ensemble[-\w]*/g, '').trim() || ''
-    const last = msgs[msgs.length - 1]?.content.replace(/\/tmp\/ensemble[-\w]*/g, '').trim() || ''
+    const msgs = agentMsgs
+      .filter(m => m.from === agent)
+      .map(m => ({ ...m, content: cleanContent(m.content) }))
+      .filter(m => m.content && m.content !== EXPLICIT_DONE_SENTINEL)
     const tokens = tokenUsageMap[agent] || 'unknown'
-    return `${agent} (${msgs.length} msgs, tokens: ${tokens}):\n  Start: ${first.slice(0, 300)}\n  Eind: ${last.slice(0, 500)}`
+    // Pick the top 3 longest substantive messages — these almost always
+    // contain the recommendation, rationale, build list, or concrete
+    // conclusions that matter. Fall back to first/last if <3 total.
+    const ranked = [...msgs].sort((a, b) => b.content.length - a.content.length).slice(0, 3)
+    const keyMsgs = ranked.length
+      ? ranked
+          .map((m, i) => `  [${i + 1}] (${m.content.length} chars)\n    ${m.content.slice(0, 1200).replace(/\n/g, '\n    ')}`)
+          .join('\n')
+      : '  (no substantive messages)'
+    return `${agent} (${msgs.length} msgs, tokens: ${tokens})\nKey messages:\n${keyMsgs}`
   }).join('\n\n')
 
   const summaryFile = collabSummaryFile(teamId)
+  const transcriptPointer = collabMessagesFile(teamId)
   fs.mkdirSync(path.dirname(summaryFile), { recursive: true })
   fs.writeFileSync(
     summaryFile,
-    `Task: ${team.description || 'unknown'}\nDuration: ${duration}\nMessages: ${agentMsgs.length}\n\n${summaryText}`,
+    `Task: ${team.description || 'unknown'}\nDuration: ${duration}\nMessages: ${agentMsgs.length}\nFull transcript: ${transcriptPointer}\n\n${summaryText}`,
   )
   console.log(`[Ensemble] Summary written to ${summaryFile}`)
 }

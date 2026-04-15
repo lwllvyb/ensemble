@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 # collab-launch.sh — All-in-one team launcher with clean output
 # Usage: collab-launch.sh <working-dir> <task-description>
+#
+# Monitor selection (env vars):
+#   COLLAB_MONITOR=auto     (default) iTerm split on macOS+iTerm2, else tmux session
+#   COLLAB_MONITOR=iterm    force iTerm split
+#   COLLAB_MONITOR=tmux     force a detached tmux session (old behavior)
+#   COLLAB_MONITOR=none     no monitor at all
+#   COLLAB_ITERM_MODE=split (default) | tab | window   how iTerm opens the monitor
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -112,9 +119,16 @@ elif [ -n "${TMUX:-}" ] && [ "$MONITOR_PREF" != "iterm" ]; then
   MONITOR_MODE="split"
 elif [ "$use_iterm" = true ]; then
   ITERM_MODE="${COLLAB_ITERM_MODE:-split}"
-  if "$SCRIPT_DIR/open-iterm-monitor.sh" "$REPO_DIR" "$TEAM_ID" "$ITERM_MODE" 2>/tmp/ensemble-iterm.err; then
+  # Forward ITERM_SESSION_ID so the split lands in the pane the user actually
+  # invoked collab from, not the frontmost iTerm window.
+  if ITERM_RESULT=$(ITERM_SESSION_ID="${ITERM_SESSION_ID:-}" "$SCRIPT_DIR/open-iterm-monitor.sh" "$REPO_DIR" "$TEAM_ID" "$ITERM_MODE" 2>/tmp/ensemble-iterm.err); then
     echo -e "  ${CHECK} Monitor opened ${D}(iTerm ${ITERM_MODE})${R}"
     MONITOR_MODE="iterm"
+    # Persist the iTerm2 session id so monitor.ts can close its own pane on exit.
+    ITERM_SESSION_ID=$(printf '%s\n' "$ITERM_RESULT" | sed -n 's/.*new_session_id=\([^ ]*\).*/\1/p' | tail -1)
+    if [ -n "$ITERM_SESSION_ID" ]; then
+      printf '%s\n' "$ITERM_SESSION_ID" > "$RUNTIME_DIR/iterm-session-id"
+    fi
   else
     echo -e "  ${D}iTerm launch failed: $(head -1 /tmp/ensemble-iterm.err 2>/dev/null)${R}"
     echo -e "  ${D}Falling back to tmux session...${R}"

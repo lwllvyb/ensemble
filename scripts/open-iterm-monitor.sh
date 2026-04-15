@@ -23,6 +23,14 @@ fi
 REPO_DIR_Q=$(printf '%q' "$REPO_DIR")
 CMD="cd $REPO_DIR_Q && ./node_modules/.bin/tsx cli/monitor.ts ${TEAM_ID}"
 
+# iTerm2 sets ITERM_SESSION_ID like "w0t1p0:UUID" in every shell. Strip the
+# prefix so we can match session ids via AppleScript.
+SOURCE_SESSION_ID=""
+if [ -n "${ITERM_SESSION_ID:-}" ]; then
+  SOURCE_SESSION_ID="${ITERM_SESSION_ID##*:}"
+fi
+echo "source_session=$SOURCE_SESSION_ID" >> "$LOG"
+
 case "$MODE" in
   split)
     if RESULT=$(osascript 2>>"$LOG" <<OSA
@@ -33,16 +41,41 @@ tell application "iTerm2"
     create window with default profile
   end if
   set winCount to count of windows
-  set theWindow to first window
-  set winId to id of theWindow
-  tell theWindow
-    set tabCount to count of tabs
-    tell current session
-      set newSession to (split vertically with default profile)
-      set newId to id of newSession
-      tell newSession
-        write text "${CMD}"
-      end tell
+  -- Prefer splitting the session the user actually invoked collab from
+  -- (via ITERM_SESSION_ID). Fall back to the current session of the
+  -- frontmost window if that session cannot be found.
+  set sourceId to "${SOURCE_SESSION_ID}"
+  set foundSession to missing value
+  set foundWindow to missing value
+  if sourceId is not "" then
+    repeat with w in windows
+      repeat with t in tabs of w
+        repeat with s in sessions of t
+          if (id of s as string) is sourceId then
+            set foundSession to s
+            set foundWindow to w
+            exit repeat
+          end if
+        end repeat
+        if foundSession is not missing value then exit repeat
+      end repeat
+      if foundSession is not missing value then exit repeat
+    end repeat
+  end if
+  if foundSession is missing value then
+    set theWindow to first window
+    set foundWindow to theWindow
+    tell theWindow
+      set foundSession to current session
+    end tell
+  end if
+  set winId to id of foundWindow
+  set tabCount to count of tabs of foundWindow
+  tell foundSession
+    set newSession to (split vertically with default profile)
+    set newId to id of newSession
+    tell newSession
+      write text "${CMD}"
     end tell
   end tell
   return "windows=" & winCount & " window_id=" & winId & " tabs_in_window=" & tabCount & " new_session_id=" & newId
