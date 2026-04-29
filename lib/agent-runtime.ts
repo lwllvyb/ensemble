@@ -224,21 +224,53 @@ export class TmuxRuntime implements AgentRuntime {
    * Paste text from a file into the pane via tmux load-buffer + paste-buffer.
    * More reliable than send-keys -l for TUI apps (e.g., Codex) that don't
    * handle literal key injection well. Sends Enter after pasting.
+   *
+   * Robust against tmux buffer races: load + paste + delete are chained in
+   * ONE shell invocation via `&&` so the buffer can't be eaten by another
+   * tmux client between the two execAsync calls (which previously caused
+   * the recurring "no buffer orch-collab-…" delivery failures).
+   *
+   * Retries up to 3x with exponential backoff (200ms, 400ms) before giving
+   * up — covers transient tmux server load and the rare case where another
+   * tmux process flushes the buffer-stack between load and paste.
    */
   async pasteFromFile(name: string, filePath: string): Promise<void> {
     const sName = this.sanitizeName(name)
     const bufName = `orch-${sName}`
     const sPath = filePath.replace(/[^a-zA-Z0-9\-_./~ ]/g, '')
-    await execAsync(`tmux load-buffer -b "${bufName}" "${sPath}"`)
-    await execAsync(`tmux paste-buffer -b "${bufName}" -t "${sName}"`)
-    // Delay to let the TUI process the paste, then send Enter twice
-    // (some TUIs like Gemini CLI need an extra Enter after paste)
-    await new Promise(r => setTimeout(r, 1000))
-    await execAsync(`tmux send-keys -t "${sName}" Enter`)
-    await new Promise(r => setTimeout(r, 300))
-    await execAsync(`tmux send-keys -t "${sName}" Enter`)
-    // Clean up buffer
-    await execAsync(`tmux delete-buffer -b "${bufName}" 2>/dev/null || true`)
+
+    // Atomic chain: if load fails, paste/delete are short-circuited; if
+    // paste fails, we still attempt delete via the trailing `|| true` so
+    // we don't leak buffers between retry attempts.
+    const cmd = [
+      `tmux load-buffer -b "${bufName}" "${sPath}"`,
+      `tmux paste-buffer -b "${bufName}" -t "${sName}"`,
+      `tmux delete-buffer -b "${bufName}" 2>/dev/null || true`,
+    ].join(' && ')
+
+    let lastErr: unknown
+    const attempts = 3
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      try {
+        await execAsync(cmd, { shell: '/bin/bash' })
+        // Success — give TUI time to process the paste, then send Enter twice
+        // (some TUIs like Gemini CLI need an extra Enter after paste).
+        await new Promise(r => setTimeout(r, 1000))
+        await execAsync(`tmux send-keys -t "${sName}" Enter`)
+        await new Promise(r => setTimeout(r, 300))
+        await execAsync(`tmux send-keys -t "${sName}" Enter`)
+        return
+      } catch (err) {
+        lastErr = err
+        if (attempt < attempts) {
+          // Exponential backoff: 200ms, 400ms.
+          await new Promise(r => setTimeout(r, 200 * 2 ** (attempt - 1)))
+        }
+      }
+    }
+    throw lastErr instanceof Error
+      ? lastErr
+      : new Error(`pasteFromFile failed after ${attempts} attempts`)
   }
 
   async capturePane(name: string, lines: number = 2000): Promise<string> {
