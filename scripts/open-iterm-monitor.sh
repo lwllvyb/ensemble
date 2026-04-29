@@ -74,6 +74,11 @@ tell application "iTerm2"
   tell foundSession
     set newSession to (split vertically with default profile)
     set newId to id of newSession
+    -- Wait for the spawned shell (zsh) to fully boot before writing.
+    -- Without this, fast `write text` lands its first chars before the
+    -- shell prompt is ready; zsh's `correct` plugin then mangles the
+    -- input (e.g. "cd ..." -> "dacd ...") and asks the user to confirm.
+    delay 0.6
     tell newSession
       write text "${CMD}"
     end tell
@@ -100,6 +105,7 @@ tell application "iTerm2"
   end if
   tell first window
     set newTab to (create tab with default profile)
+    delay 0.6
     tell current session of newTab
       write text "${CMD}"
     end tell
@@ -113,6 +119,7 @@ tell application "iTerm2"
   activate
   delay 0.1
   set newWindow to (create window with default profile)
+  delay 0.6
   tell current session of newWindow
     write text "${CMD}"
   end tell
