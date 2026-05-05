@@ -58,6 +58,21 @@ const COMPLETION_PATTERNS = [
   /(?:^|\s)tot de volgende(?:\s|$)/i,
 ]
 
+// Interactive gates that block agent startup and need an automated response.
+// Debounced: same gate is not re-sent within 3 seconds to avoid key-repeat storms.
+const AUTO_CONFIRM_GATES = [
+  {
+    name: 'trust prompt',
+    pattern: /Do you trust the contents of this directory\?|Quick safety check:|Yes, I trust this folder/i,
+    action: 'enter' as const,
+  },
+  {
+    name: 'bypass permissions warning',
+    pattern: /WARNING: Claude Code running in Bypass Permissions mode/i,
+    action: 'accept-bypass' as const,
+  },
+]
+
 interface CompletionSignal {
   agentName: string
   timestamp: number
@@ -65,6 +80,12 @@ interface CompletionSignal {
 // Telegram notifications: set both env vars to enable, omit to disable
 const TELEGRAM_BOT_TOKEN = process.env.ENSEMBLE_TELEGRAM_BOT_TOKEN || ''
 const TELEGRAM_CHAT_ID = process.env.ENSEMBLE_TELEGRAM_CHAT_ID || ''
+
+// Optional: helsdingen-alerts hub (2026-04-21: ensemble collab summaries
+// gaan hier doorheen voor centrale dedup + D1-logging). Fallback op de
+// oude directe Telegram curl als ALERT_HUB_SECRET niet gezet is.
+const ALERT_HUB_URL = process.env.ALERT_HUB_URL || 'https://alerts.camviewer.app/ingest/alert'
+const ALERT_HUB_SECRET = process.env.ALERT_HUB_SECRET || ''
 
 class EnsembleService {
   private readonly disbandingTeams = new Set<string>()
@@ -203,12 +224,57 @@ function escMd(s: string): string {
   return s.replace(/([_[\]()~`>#+\-=|{}.!*\\])/g, '\\$1')
 }
 
+/** Escape HTML voor alert-hub body. */
+function escHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
 function sendTelegramSummary(params: {
   task: string
   duration: string
   messageCount: number
   agentSummaries: { name: string; msgs: number; tokens: string }[]
+  teamId?: string
 }): void {
+  // Stabiele dedup-key. teamId indien aangeleverd door caller, anders
+  // task-slice + now zodat retries niet dubbel posten.
+  const teamKey = params.teamId || `${params.task.slice(0, 40).replace(/\\s+/g, '-')}-${Date.now()}`
+
+  // Voorkeur: helsdingen-alerts hub als ALERT_HUB_SECRET gezet is.
+  if (ALERT_HUB_SECRET) {
+    const agents = params.agentSummaries
+    const agentLine = agents.map(a => `${escHtml(a.name)} (${a.msgs}, ${escHtml(a.tokens)})`).join(' + ')
+    const hubBody = [
+      `<i>${escHtml(params.task.slice(0, 150))}</i>`,
+      agentLine,
+    ].join('\n')
+
+    const hubPayload = JSON.stringify({
+      app: 'ensemble',
+      severity: 'low',
+      dedup_key: `collab-${teamKey}`,
+      title: `\u2728 <b>Collab klaar</b> \u2014 ${escHtml(params.duration)}, ${params.messageCount} msgs`,
+      body: hubBody,
+    })
+
+    const hubCurl = spawn(
+      'curl',
+      [
+        '-sS', '-X', 'POST',
+        `${ALERT_HUB_URL}?key=${encodeURIComponent(ALERT_HUB_SECRET)}`,
+        '-H', 'Content-Type: application/json',
+        '-d', hubPayload,
+      ],
+      { detached: true, stdio: 'ignore' },
+    )
+    hubCurl.on('error', err => {
+      console.error('[Ensemble] Failed to post to alert-hub:', err)
+    })
+    hubCurl.unref()
+    return
+  }
+
+  // Fallback: directe Telegram als hub-secret niet gezet.
   if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return
 
   const agents = params.agentSummaries
@@ -447,6 +513,8 @@ export async function createEnsembleTeam(
       const start = Date.now()
       const agentConfig = resolveAgentProgram(program)
       const readyMarker = agentConfig.readyMarker
+      let lastGateName = ''
+      let lastGateHandledAt = 0
       while (Date.now() - start < maxWait) {
         try {
           if (hostId && !isSelf(hostId)) {
@@ -457,6 +525,22 @@ export async function createEnsembleTeam(
             }
           } else {
             const output = await runtime.capturePane(sessionName, 50)
+            const gate = AUTO_CONFIRM_GATES.find(candidate => candidate.pattern.test(output))
+            if (gate) {
+              const now = Date.now()
+              if (gate.name !== lastGateName || now - lastGateHandledAt >= 3000) {
+                if (gate.action === 'accept-bypass') {
+                  await runtime.sendKeys(sessionName, 'Down', { enter: true })
+                } else {
+                  await runtime.sendKeys(sessionName, 'Enter')
+                }
+                lastGateName = gate.name
+                lastGateHandledAt = now
+                console.log(`[Ensemble] Auto-confirmed ${gate.name} in ${sessionName}`)
+              }
+              await new Promise(r => setTimeout(r, 1000))
+              continue
+            }
             if (output.includes(readyMarker)) {
               console.log(`[Ensemble] ${sessionName} is ready (${Math.round((Date.now() - start) / 1000)}s)`)
               return true
@@ -564,6 +648,15 @@ export async function createEnsembleTeam(
               } else {
                 const prompt = fs.readFileSync(promptFile, 'utf-8')
                 await runtime.sendKeys(sessionName, prompt, { literal: true, enter: true })
+              }
+              // Claude sometimes shows "[Pasted text" and needs an extra Enter to submit
+              if (agent.program.toLowerCase().includes('claude')) {
+                for (const delayMs of [1500, 3000, 6000]) {
+                  await new Promise(resolve => setTimeout(resolve, delayMs))
+                  const pane = await runtime.capturePane(sessionName, 80)
+                  if (!/\[Pasted text/i.test(pane)) break
+                  await runtime.sendKeys(sessionName, 'Enter')
+                }
               }
             }
             console.log(`[Ensemble] ✓ Prompt injected into ${sessionName}`)
@@ -848,6 +941,7 @@ export async function disbandTeam(teamId: string): Promise<ServiceResult<{ team:
           msgs: agentMessages.filter(m => m.from === agent).length,
           tokens: tokenUsageMap[agent] || '?',
         })),
+        teamId: team.id,
       })
 
       // Detect the working directory as project hint

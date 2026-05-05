@@ -33,7 +33,10 @@ echo "source_session=$SOURCE_SESSION_ID" >> "$LOG"
 
 case "$MODE" in
   split)
-    if RESULT=$(osascript 2>>"$LOG" <<OSA
+    # bash 3.2 (macOS system bash) cannot parse heredoc inside $() inside case.
+    # Workaround: write AppleScript to a temp file first, then run osascript on it.
+    _SCPT=$(mktemp /tmp/osa-split-XXXXXX.applescript)
+    cat > "$_SCPT" <<OSA
 tell application "iTerm2"
   activate
   delay 0.15
@@ -86,11 +89,13 @@ tell application "iTerm2"
   return "windows=" & winCount & " window_id=" & winId & " tabs_in_window=" & tabCount & " new_session_id=" & newId
 end tell
 OSA
-    ); then
+    if RESULT=$(osascript "$_SCPT" 2>>"$LOG"); then
+      rm -f "$_SCPT"
       echo "rc=0 result=$RESULT" >> "$LOG"
       echo "$RESULT"
     else
       RC=$?
+      rm -f "$_SCPT"
       echo "rc=$RC — zie $LOG" >&2
       exit 5
     fi

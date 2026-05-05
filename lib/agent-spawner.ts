@@ -5,9 +5,14 @@
  */
 
 import { v4 as uuidv4 } from 'uuid'
+import path from 'path'
+import { fileURLToPath } from 'url'
 import { getRuntime } from './agent-runtime'
 import { getSelfHostId } from './hosts-config'
-import { buildAgentCommand } from './agent-config'
+import { buildAgentCommandParts } from './agent-config'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const REPO_ROOT = path.resolve(__dirname, '..')
 
 export interface SpawnedAgent {
   id: string
@@ -30,9 +35,31 @@ function computeSessionName(agentName: string): string {
   return agentName.replace(/[^a-zA-Z0-9\-_.]/g, '')
 }
 
-/** Resolve program name to CLI command using agents.json config */
-function resolveStartCommand(program: string): string {
-  return buildAgentCommand(program)
+function shellEscape(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`
+}
+
+/** Resolve program name to CLI command, adding runtime flags for cwd handling */
+function resolveStartCommand(program: string, cwd: string): string {
+  const parts = buildAgentCommandParts(program)
+  const normalized = program.toLowerCase()
+
+  if (
+    normalized.includes('codex')
+    && !parts.some(p => p === '-C' || p === '--cd' || p.startsWith('--cd='))
+  ) {
+    parts.push('--cd', cwd)
+  }
+
+  if (
+    normalized.includes('claude')
+    && cwd !== REPO_ROOT
+    && !parts.some(p => p === '--add-dir' || p.startsWith('--add-dir='))
+  ) {
+    parts.push('--add-dir', REPO_ROOT)
+  }
+
+  return parts.map(shellEscape).join(' ')
 }
 
 /**
@@ -52,7 +79,7 @@ export async function spawnLocalAgent(options: SpawnAgentOptions): Promise<Spawn
   await new Promise(r => setTimeout(r, 300))
 
   // Start the AI program
-  const startCommand = resolveStartCommand(options.program)
+  const startCommand = resolveStartCommand(options.program, cwd)
 
   // Forward ENSEMBLE_* and agent-specific env vars to tmux session
   const envForward = Object.entries(process.env)

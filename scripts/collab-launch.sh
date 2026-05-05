@@ -18,7 +18,7 @@ source "$SCRIPT_DIR/collab-paths.sh"
 CWD="${1:-.}"
 TASK="${2:?Usage: collab-launch.sh <cwd> <task>}"
 AGENTS="${3:-}"  # Optional: comma-separated agent names (e.g. "gemini,claude")
-API="http://localhost:23000"
+API="${ENSEMBLE_URL:-http://localhost:23000}"
 HOST_ID="${ENSEMBLE_HOST_ID:-local}"
 
 # ─── Colors ───
@@ -99,7 +99,14 @@ echo -e "  ${CHECK} Bridge started"
 #   1. tmux split   — if already inside a tmux session
 #   2. iTerm split  — on macOS when iTerm2 is the active terminal (or forced)
 #   3. tmux detached session — cross-platform fallback
-MONITOR_CMD="cd '$REPO_DIR' && ./node_modules/.bin/tsx cli/monitor.ts $TEAM_ID"
+MONITOR_ENV_PREFIX=""
+for KEY in ENSEMBLE_URL ENSEMBLE_DATA_DIR ENSEMBLE_PORT ENSEMBLE_HOST ENSEMBLE_CORS_ORIGIN ENSEMBLE_AGENTS_CONFIG ENSEMBLE_AGENT_FLAGS ENSEMBLE_HOST_ID; do
+  VALUE="${!KEY:-}"
+  if [ -n "$VALUE" ]; then
+    MONITOR_ENV_PREFIX+="$KEY=$(printf '%q' "$VALUE") "
+  fi
+done
+MONITOR_CMD="cd '$REPO_DIR' && ${MONITOR_ENV_PREFIX}node --import tsx cli/monitor.ts $TEAM_ID"
 MONITOR_PREF="${COLLAB_MONITOR:-auto}"
 
 use_iterm=false
@@ -135,7 +142,7 @@ elif [ "$use_iterm" = true ]; then
     MONITOR_SESSION="ensemble-$TEAM_ID"
     tmux kill-session -t "$MONITOR_SESSION" 2>/dev/null || true
     tmux new-session -d -s "$MONITOR_SESSION" -c "$REPO_DIR" \
-      "./node_modules/.bin/tsx cli/monitor.ts $TEAM_ID"
+      "node --import tsx cli/monitor.ts $TEAM_ID"
     echo -e "  ${CHECK} Monitor ready ${D}(tmux attach -t $MONITOR_SESSION)${R}"
     MONITOR_MODE="session"
   fi

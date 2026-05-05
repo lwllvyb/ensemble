@@ -57,10 +57,17 @@ export function resolveAgentProgram(program: string): AgentProgram {
   }
 }
 
+function shellEscape(token: string): string {
+  return /^[a-zA-Z0-9_./:=+-]+$/.test(token)
+    ? token
+    : `'${token.replace(/'/g, `'\\''`)}'`
+}
+
 /**
- * Build the full CLI command for an agent, including env-level flags.
+ * Build the full CLI command for an agent as an array of unescaped tokens.
+ * Preferred over buildAgentCommand when passing to execFile/spawn.
  */
-export function buildAgentCommand(program: string): string {
+export function buildAgentCommandParts(program: string): string[] {
   const agent = resolveAgentProgram(program)
   const envFlags = (process.env['ENSEMBLE_AGENT_FLAGS'] ?? '').trim()
 
@@ -84,5 +91,12 @@ export function buildAgentCommand(program: string): string {
     }
   }
 
-  return [agent.command, envFlags, defaultTokens.join(' ')].filter(Boolean).join(' ')
+  return [agent.command, ...envTokens, ...defaultTokens]
+}
+
+/**
+ * Build the full CLI command for an agent as a shell-escaped string.
+ */
+export function buildAgentCommand(program: string): string {
+  return buildAgentCommandParts(program).map(shellEscape).join(' ')
 }
