@@ -22,6 +22,12 @@ echo ""
 mkdir -p "$SKILL_DIR"
 if [ -f "$REPO_DIR/skill/SKILL.md" ]; then
   sed "s|__ENSEMBLE_DIR__|${REPO_DIR}|g" "$REPO_DIR/skill/SKILL.md" > "$SKILL_DIR/SKILL.md"
+  # Guard against a hand-copied skill: an unresolved placeholder means every script
+  # path in the installed skill is broken.
+  if grep -q '__ENSEMBLE_DIR__' "$SKILL_DIR/SKILL.md"; then
+    echo -e "  \033[91m✗${R} Placeholder __ENSEMBLE_DIR__ survived substitution, aborting"
+    exit 1
+  fi
   echo -e "  ${CHECK} Skill installed → ${D}${SKILL_DIR}/SKILL.md${R}"
 else
   echo -e "  \033[91m✗${R} skill/SKILL.md not found in repo"
@@ -29,12 +35,18 @@ else
 fi
 
 # ─── 2. Add permissions ───
+# Must cover every script the skill tells Claude to run. A missing entry turns a
+# routine troubleshooting step into a permission prompt mid-collab.
 SCRIPTS=(
   "Bash(${REPO_DIR}/scripts/collab-launch.sh:*)"
   "Bash(${REPO_DIR}/scripts/collab-poll.sh:*)"
   "Bash(${REPO_DIR}/scripts/collab-status.sh:*)"
   "Bash(${REPO_DIR}/scripts/collab-cleanup.sh:*)"
   "Bash(${REPO_DIR}/scripts/collab-replay.sh:*)"
+  "Bash(${REPO_DIR}/scripts/collab-livefeed.sh:*)"
+  "Bash(${REPO_DIR}/scripts/collab-preflight.sh:*)"
+  "Bash(${REPO_DIR}/scripts/collab-postcheck.sh:*)"
+  "Bash(${REPO_DIR}/scripts/collab-rescue.sh:*)"
   "Bash(${REPO_DIR}/scripts/ensemble-bridge.sh:*)"
 )
 

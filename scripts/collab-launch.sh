@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # collab-launch.sh — All-in-one team launcher with clean output
-# Usage: collab-launch.sh <working-dir> <task-description>
+# Usage: collab-launch.sh <working-dir> <task-description> [agents-csv] [template]
+#
+#   agents-csv  comma-separated agent keys from agents.json (first = lead).
+#               Default: codex (lead) + claude code (worker).
+#   template    key from collab-templates.json: review|implement|research|debug.
+#               Also settable via COLLAB_TEMPLATE. Empty = generic lead/worker roles.
 #
 # Monitor selection (env vars):
 #   COLLAB_MONITOR=auto     (default) iTerm split on macOS+iTerm2, else tmux session
@@ -16,8 +21,11 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/collab-paths.sh"
 
 CWD="${1:-.}"
-TASK="${2:?Usage: collab-launch.sh <cwd> <task>}"
+TASK="${2:?Usage: collab-launch.sh <cwd> <task> [agents] [template]}"
 AGENTS="${3:-}"  # Optional: comma-separated agent names (e.g. "gemini,claude")
+# Optional collab template key from collab-templates.json (review|implement|research|debug).
+# Assigns explicit roles to each agent instead of the generic lead/worker prompt.
+TEMPLATE="${4:-${COLLAB_TEMPLATE:-}}"
 
 # ─── Auto-fallback to codex-only when claude auth is dead (set by preflight) ───
 # Preflight writes /tmp/collab-agents-override.txt when claude tmux-probe failed.
@@ -68,7 +76,7 @@ fi
 # ─── 2. Create team (use env vars to avoid quoting hell) ───
 TEAM_NAME="collab-$(python3 -c 'import random,time; print(str(time.time_ns()//1000000)+"-"+str(random.randint(1000,9999)))')"
 PAYLOAD_FILE=$(mktemp)
-TNAME="$TEAM_NAME" TDESC="$TASK" TCWD="$CWD" THOST="$HOST_ID" TAGENTS="$AGENTS" PFILE="$PAYLOAD_FILE" python3 -c "
+TNAME="$TEAM_NAME" TDESC="$TASK" TCWD="$CWD" THOST="$HOST_ID" TAGENTS="$AGENTS" TTEMPLATE="$TEMPLATE" PFILE="$PAYLOAD_FILE" python3 -c "
 import json, os
 agents_str = os.environ.get('TAGENTS', '')
 if agents_str:
@@ -81,13 +89,17 @@ else:
         {'program': 'codex', 'role': 'lead', 'hostId': os.environ['THOST']},
         {'program': 'claude code', 'role': 'worker', 'hostId': os.environ['THOST']}
     ]
-json.dump({
+payload = {
     'name': os.environ['TNAME'],
     'description': os.environ['TDESC'],
     'agents': agents,
     'feedMode': 'live',
     'workingDirectory': os.environ['TCWD']
-}, open(os.environ['PFILE'], 'w'))
+}
+template = os.environ.get('TTEMPLATE', '').strip()
+if template:
+    payload['templateName'] = template
+json.dump(payload, open(os.environ['PFILE'], 'w'))
 "
 RESULT=$(curl -sf -X POST "$API/api/ensemble/teams" \
   -H "Content-Type: application/json" \
@@ -106,9 +118,14 @@ TEAM_ID_FILE="$(collab_team_id_file "$TEAM_ID")"
 mkdir -p "$RUNTIME_DIR" "$(dirname "$MESSAGES_FILE")" "$(dirname "$FEED_FILE")"
 touch "$MESSAGES_FILE"
 printf '%s\n' "$TEAM_ID" > "$TEAM_ID_FILE"
-# Also write to a well-known location so callers can find the latest team ID
+# Also write to a well-known location so callers can find the latest team ID.
+# NOTE: this file is global and gets overwritten by concurrent launches. Callers
+# that support parallel collabs should read the TEAM_ID=... line from stdout instead.
 printf '%s\n' "$TEAM_ID" > /tmp/collab-team-id.txt
 echo -e "  ${CHECK} Team created ${D}(${TEAM_NAME})${R}"
+if [ -n "$TEMPLATE" ]; then
+  echo -e "  ${CHECK} Template ${D}${TEMPLATE}${R}"
+fi
 
 # ─── 3. Bridge (writes its own PID file via single-instance guard) ───
 nohup "$SCRIPT_DIR/ensemble-bridge.sh" "$TEAM_ID" "$API" >> "$BRIDGE_LOG_FILE" 2>&1 &
@@ -237,3 +254,5 @@ echo -e "  ${D}│${R}  ${W}d${R}     ${D}disband team${R}                   ${D
 echo -e "  ${D}│${R}  ${W}q${R}     ${D}quit monitor${R}                   ${D}│${R}"
 echo -e "  ${D}└───────────────────────────────────────┘${R}"
 echo ""
+# Machine-readable trailer, safe to grep even when multiple collabs run in parallel.
+echo "TEAM_ID=$TEAM_ID"
