@@ -74,16 +74,19 @@ while true; do
 
   if [ "$TOTAL" -gt "$POSTED" ]; then
     # Process new lines — only advance posted counter on success.
-    NEW_POSTED=$(python3 -c "
-import json, sys, time, urllib.error, urllib.request
+    # Values arrive via argv, inside a quoted heredoc, so the shell performs no
+    # expansion on the program text. Interpolating them into the source meant a
+    # single quote in a path, team id, or ENSEMBLE_URL broke the program or ran
+    # as code.
+    NEW_POSTED=$(python3 - "$TEAM_ID" "$API" "$POSTED" "$FILE" <<'PY' 2>&1 1>"$RESULT_FILE"
+import json, sys, time, urllib.error, urllib.parse, urllib.request
 from itertools import islice
 
-team_id = '$TEAM_ID'
-api = '$API'
-posted = $POSTED
+team_id, api, posted_raw, messages_path = sys.argv[1:5]
+posted = int(posted_raw)
 last_success = posted
 
-with open('$FILE') as f:
+with open(messages_path) as f:
     for i, line in enumerate(islice(f, posted, None), start=posted):
         line = line.strip()
         if not line:
@@ -115,7 +118,7 @@ with open('$FILE') as f:
         }).encode()
 
         req = urllib.request.Request(
-            f'{api}/api/ensemble/teams/{team_id}',
+            f'{api}/api/ensemble/teams/{urllib.parse.quote(team_id, safe="")}',
             data=data,
             headers={'Content-Type': 'application/json'},
             method='POST'
@@ -155,7 +158,8 @@ with open('$FILE') as f:
 
 # Output the last successfully posted line number
 print(last_success, flush=True)
-" 2>&1 1>"$RESULT_FILE")
+PY
+)
 
     # Echo captured stderr (diagnostic messages) so they appear in bridge log
     [ -n "$NEW_POSTED" ] && echo "$NEW_POSTED" >&2

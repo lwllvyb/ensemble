@@ -50,23 +50,20 @@ SCRIPTS=(
   "Bash(${REPO_DIR}/scripts/ensemble-bridge.sh:*)"
 )
 
-ADDED=0
-if [ -f "$SETTINGS_FILE" ]; then
-  for PERM in "${SCRIPTS[@]}"; do
-    if ! grep -qF "$PERM" "$SETTINGS_FILE" 2>/dev/null; then
-      ADDED=$((ADDED + 1))
-    fi
-  done
-  if [ "$ADDED" -gt 0 ]; then
-    # Use python to safely merge permissions into existing settings
-    python3 -c "
+# Merge the permissions in one pass. Path and permission strings go in as argv
+# inside a quoted heredoc: building the Python source by interpolation broke the
+# installer outright for anyone whose repo path contains a quote.
+ADDED=$(python3 - "$SETTINGS_FILE" "${SCRIPTS[@]}" <<'PY'
 import json, sys
 
-settings_path = '$SETTINGS_FILE'
-new_perms = $(python3 -c "import json; print(json.dumps([$(printf '"%s",' "${SCRIPTS[@]}" | sed 's/,$//')]))")
+settings_path = sys.argv[1]
+new_perms = sys.argv[2:]
 
-with open(settings_path, 'r') as f:
-    settings = json.load(f)
+try:
+    with open(settings_path) as f:
+        settings = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    settings = {}
 
 allow = settings.setdefault('permissions', {}).setdefault('allow', [])
 added = 0
@@ -80,22 +77,13 @@ with open(settings_path, 'w') as f:
     f.write('\n')
 
 print(added)
-" > /dev/null
-    echo -e "  ${CHECK} Permissions added → ${D}${SETTINGS_FILE}${R}"
-  else
-    echo -e "  ${CHECK} Permissions already configured"
-  fi
+PY
+)
+
+if [ "${ADDED:-0}" -gt 0 ] 2>/dev/null; then
+  echo -e "  ${CHECK} Permissions added (${ADDED}) → ${D}${SETTINGS_FILE}${R}"
 else
-  # Create settings file with permissions
-  python3 -c "
-import json
-perms = $(python3 -c "import json; print(json.dumps([$(printf '"%s",' "${SCRIPTS[@]}" | sed 's/,$//')]))")
-settings = {'permissions': {'allow': perms}}
-with open('$SETTINGS_FILE', 'w') as f:
-    json.dump(settings, f, indent=2)
-    f.write('\n')
-"
-  echo -e "  ${CHECK} Settings created → ${D}${SETTINGS_FILE}${R}"
+  echo -e "  ${CHECK} Permissions already configured"
 fi
 
 # ─── 3. Check prerequisites ───
