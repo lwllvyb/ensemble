@@ -151,13 +151,29 @@ fi
 # ─── 4a. Codex quota probe (regression 2026-05-13: 'usage limit hit' isn't ──
 #         caught by `codex login status` — only by an actual exec call). Run a
 #         minimal `codex exec` and look for the limit-message. Costs ~1 token.
-CODEX_QUOTA_OUT=$(timeout 25 codex exec --dangerously-bypass-approvals-and-sandbox "say ok" 2>&1 | tail -5)
-if echo "$CODEX_QUOTA_OUT" | grep -qiE "hit your usage limit|usage limit|rate.?limit|quota"; then
-  RESET_TIME=$(echo "$CODEX_QUOTA_OUT" | grep -oE "try again at[^.]*\." | head -1)
-  warn "Codex quota dead: ${RESET_TIME:-(unknown reset time)} — codex-1 disabled this run"
+# The probe demands a sentinel back rather than merely checking for error words.
+# Testing "did codex answer" is not the same as "does codex work": an auth mode
+# that rejects the configured model answers with an ordinary HTTP 400, contains
+# no quota wording, and used to be reported as healthy — after which the agent
+# spawned, reported ready, and then sat silent for the whole session.
+# (2026-08-11: a ChatGPT-auth account rejecting an API-only model name did
+# exactly this.)
+CODEX_PROBE_OUT=$(timeout 40 codex exec --dangerously-bypass-approvals-and-sandbox \
+  "Reply with exactly this and nothing else: PROBE-OK-7391" 2>&1)
+if echo "$CODEX_PROBE_OUT" | grep -qiE "hit your usage limit|usage limit|rate.?limit|quota"; then
+  RESET_TIME=$(echo "$CODEX_PROBE_OUT" | grep -oE "try again at[^.]*\." | head -1)
+  warn "Codex quota dead: ${RESET_TIME:-(unknown reset time)} — codex disabled this run"
+  CODEX_DEAD=1
+elif ! echo "$CODEX_PROBE_OUT" | grep -q "PROBE-OK-7391"; then
+  # Drop hook/MCP chatter so the real error stays visible.
+  CODEX_TAIL=$(echo "$CODEX_PROBE_OUT" | grep -viE '^hook:|rmcp::|^tokens used' | tail -3)
+  warn "Codex answered but produced nothing usable — codex disabled this run"
+  warn "  Last lines: ${CODEX_TAIL:-(no output)}"
+  warn "  Often the configured model is not valid for the current auth mode."
+  warn "  Check: codex login status  +  the model in ~/.codex/config.toml"
   CODEX_DEAD=1
 else
-  ok "Codex quota healthy (probe responded)"
+  ok "Codex works (probe returned its sentinel)"
   CODEX_DEAD=0
 fi
 
