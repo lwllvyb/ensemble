@@ -64,9 +64,10 @@ else
 fi
 
 # ─── 1b. Preflight checks (auth + DNS + service age) ───
-# Skip with COLLAB_SKIP_PREFLIGHT=1 if needed
+# Skip with COLLAB_SKIP_PREFLIGHT=1 if needed.
+# Pass the requested agents so preflight only checks the CLIs this run needs.
 if [ "${COLLAB_SKIP_PREFLIGHT:-0}" != "1" ]; then
-  if ! "$SCRIPT_DIR/collab-preflight.sh" 2>&1 | sed 's/^/  /'; then
+  if ! "$SCRIPT_DIR/collab-preflight.sh" "$AGENTS" 2>&1 | sed 's/^/  /'; then
     echo -e "\n  ${R}\033[91m✗${R} Preflight FAILED — fix above issues then re-run."
     echo -e "  ${D}(bypass with COLLAB_SKIP_PREFLIGHT=1, but agents will likely fail)${R}"
     exit 1
@@ -232,9 +233,22 @@ fi
 # ─── Output ───
 echo ""
 # Build dynamic agent list for display
-AGENT_NAMES=$(curl -sf "$API/api/ensemble/teams/$TEAM_ID" 2>/dev/null \
+TEAM_JSON=$(curl -sf "$API/api/ensemble/teams/$TEAM_ID" 2>/dev/null || echo "")
+AGENT_NAMES=$(printf '%s' "$TEAM_JSON" \
   | python3 -c "import json,sys; t=json.load(sys.stdin); print(' + '.join(a['name'] for a in t['team']['agents']))" 2>/dev/null \
   || echo "agents")
+# Steer hint must follow the real roster: a hardcoded "1/2 codex / claude" is
+# wrong for any team that is not the default pair (three agents, or grok).
+STEER_KEYS=$(printf '%s' "$TEAM_JSON" \
+  | python3 -c "import json,sys; n=len(json.load(sys.stdin)['team']['agents']); print('/'.join(str(i+1) for i in range(min(n,4))))" 2>/dev/null \
+  || echo "1/2")
+STEER_TEXT=$(printf '%s' "$TEAM_JSON" \
+  | python3 -c "
+import json,sys
+names=[a['name'] for a in json.load(sys.stdin)['team']['agents']][:4]
+text='steer ' + ' / '.join(names)
+print(text if len(text) <= 31 else text[:30] + '…')
+" 2>/dev/null || echo "steer agents")
 echo -e "  ${BD}${G}Team is live!${R} ${W}${AGENT_NAMES}${R} are collaborating."
 echo ""
 if [ "$MONITOR_MODE" = "split" ]; then
@@ -248,7 +262,14 @@ else
   echo -e "  ${D}│${R}  ${D}tmux attach -t $MONITOR_SESSION${R}      ${D}│${R}"
 fi
 echo -e "  ${D}│${R}  ${W}s${R}     ${D}steer team${R}                     ${D}│${R}"
-echo -e "  ${D}│${R}  ${W}1${R}/${W}2${R}   ${D}steer codex / claude${R}           ${D}│${R}"
+python3 - "$STEER_KEYS" "$STEER_TEXT" <<'PY'
+import sys
+keys, text = sys.argv[1], sys.argv[2]
+# Box interior is 39 columns wide; keep the key column aligned with the rows above.
+left = keys.ljust(5)
+pad = ' ' * max(1, 39 - len(f"  {left} {text}"))
+print(f"  \033[2m│\033[0m  \033[97m{left}\033[0m \033[2m{text}\033[0m{pad}\033[2m│\033[0m")
+PY
 echo -e "  ${D}│${R}  ${W}j${R}/${W}k${R}   ${D}scroll${R}                         ${D}│${R}"
 echo -e "  ${D}│${R}  ${W}d${R}     ${D}disband team${R}                   ${D}│${R}"
 echo -e "  ${D}│${R}  ${W}q${R}     ${D}quit monitor${R}                   ${D}│${R}"

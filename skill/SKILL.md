@@ -75,8 +75,11 @@ Force a specific mode with `COLLAB_MONITOR=tmux|iterm|none` or change iTerm layo
 
 **Agent selection (3rd argument, optional).** Comma-separated keys from `agents.json`;
 the first one becomes lead. Default when omitted: `codex` (lead) + `claude code` (worker).
-Available keys: `codex`, `claude`, `fable`, `gemini`, `aider`, `opencode`.
+Available keys: `codex`, `claude`, `grok`, `fable`, `gemini`, `aider`, `opencode`.
 Only pass this when the user explicitly names agents in the task ("laat gemini en claude…").
+Preflight checks only the CLIs you name here, so a codex quota wall does not block a
+`grok,claude` run. Naming agents explicitly also disables the auto-fallback: a dead agent
+becomes a hard failure instead of a silent swap.
 
 **Template selection (4th argument, optional).** A key from `collab-templates.json` that
 gives each agent an explicit role instead of the generic lead/worker prompt. Also settable
@@ -172,14 +175,15 @@ When done: summarize + cleanup poller/bridge PIDs.
 
 Auto-disband triggers on one of two paths:
 
-1. **Explicit sentinel (preferred).** Two different active agents each send a team-say whose
-   entire content is `<<COLLAB_DONE>>`. This bypasses the message-count minimum and the idle
-   wait. The agent prompts already instruct this.
-2. **Idle + completion signals.** Only after a minimum number of exchanged messages, when the
-   transcript has gone quiet and multiple agents signalled completion.
+1. **Explicit sentinel (preferred).** EVERY active agent sends a team-say whose entire content
+   is `<<COLLAB_DONE>>`. This bypasses the message-count minimum and the idle wait. The agent
+   prompts already instruct this. The bar is every agent, not two, so a third agent is never
+   cut off while its teammates close up.
+2. **Idle + completion signals.** A safety net for teams that go quiet without sending the
+   sentinel: it needs a minimum number of exchanged messages AND at least 60s of silence.
 
-Because path 1 requires an exact-match sentinel, ordinary words like "done" or "klaar" in a
-status update no longer kill a team. Do not warn agents to avoid those words.
+Ordinary words like "done" or "klaar" in a status update do not kill a team while the
+conversation is running. Do not warn agents to avoid those words.
 
 ## Troubleshooting
 

@@ -43,8 +43,11 @@ interface ServiceResult<T> {
 const IDLE_CHECK_INTERVAL_MS = 15_000
 const COMPLETION_SIGNAL_WINDOW_MS = 180_000
 const SINGLE_SIGNAL_IDLE_THRESHOLD_MS = 120_000
+// Two agents using completion wording still needs the room to have gone quiet
+// first, otherwise a closure proposal mid-conversation ends the session.
+const TWO_SIGNAL_IDLE_THRESHOLD_MS = 60_000
 const MIN_MESSAGES_BEFORE_AUTO_DISBAND = 10
-// Explicit sentinel: when both agents send this exact marker as a full
+// Explicit sentinel: when every active agent sends this exact marker as a full
 // message, the team auto-disbands immediately — no idle wait, no minimum
 // message count. Agents are instructed to use it in buildPromptPreview.
 const EXPLICIT_DONE_SENTINEL = '<<COLLAB_DONE>>'
@@ -169,17 +172,18 @@ class EnsembleService {
     const lastMessage = nonEnsembleMessages[nonEnsembleMessages.length - 1]
     if (!lastMessage) return false
 
-    // Explicit sentinel path: if at least two DIFFERENT active agents have
-    // sent the exact done sentinel, disband immediately. This bypasses the
-    // min-message count and the idle wait — the agents have explicitly
-    // agreed the task is done.
+    // Explicit sentinel path: once EVERY active agent has sent the exact done
+    // sentinel, disband immediately. This bypasses the min-message count and
+    // the idle wait — the agents have explicitly agreed the task is done.
+    // The bar is every agent, not two: in a trio, disbanding on the second
+    // sentinel kills the third agent mid-task.
     const activeNames = new Set(team.agents.filter(a => a.status === 'active').map(a => a.name))
     const sentinelSenders = new Set(
       messages
         .filter(m => activeNames.has(m.from) && m.content.trim() === EXPLICIT_DONE_SENTINEL)
         .map(m => m.from),
     )
-    if (sentinelSenders.size >= 2) return true
+    if (activeNames.size >= 2 && sentinelSenders.size >= activeNames.size) return true
 
     // Don't auto-disband until agents have exchanged enough messages
     if (nonEnsembleMessages.length < MIN_MESSAGES_BEFORE_AUTO_DISBAND) return false
@@ -204,6 +208,12 @@ class EnsembleService {
       .filter((signal): signal is CompletionSignal => !Number.isNaN(signal.timestamp))
       .sort((a, b) => a.timestamp - b.timestamp)
 
+    // Wording alone never ends a live session. Agents say "klaar" about a
+    // sub-step, and the closure proposal the prompt asks for in rule 7 ("I think
+    // we're done because X") is itself a match. Killing on that costs a trio its
+    // third agent mid-task. The exact sentinel above is the fast path; these
+    // patterns are only a safety net for teams that go quiet without sending it.
+    if (idleForMs <= TWO_SIGNAL_IDLE_THRESHOLD_MS) return false
     if (this.hasTwoRecentCompletionSignals(completionSignals)) return true
     if (idleForMs <= SINGLE_SIGNAL_IDLE_THRESHOLD_MS) return false
     return completionSignals.length >= 1
@@ -366,8 +376,21 @@ export function buildPromptPreview(params: {
 }): string {
   const template = loadCollabTemplate(params.templateName)
   const scriptsDir = path.join(__dirname, '..', 'scripts')
-  const teamSayCmd = `${scriptsDir}/team-say.sh ${params.teamId} ${params.agentName} ${params.teammateNames[0] || 'team'}`
+  // Everyone reads the same feed regardless of the `to` field, so with more than
+  // one teammate address the team — naming a single one reads as a private aside.
+  const sayTarget = params.teammateNames.length === 1 ? params.teammateNames[0] : 'team'
+  const teamSayCmd = `${scriptsDir}/team-say.sh ${params.teamId} ${params.agentName} ${sayTarget || 'team'}`
   const teamReadCmd = `${scriptsDir}/team-read.sh ${params.teamId}`
+
+  // Wording has to scale past a pair: a trio told "both teammates" will close
+  // the team as soon as one other agent agrees.
+  const mateCount = params.teammateNames.length
+  const solo = mateCount === 1
+  const mateWord = solo ? 'teammate' : 'teammates'
+  const mateList = solo
+    ? params.teammateNames[0]
+    : params.teammateNames.slice(0, -1).join(', ') + ' and ' + params.teammateNames[mateCount - 1]
+  const agentTotal = mateCount + 1
 
   let roleInstructions: string[]
 
@@ -384,19 +407,22 @@ export function buildPromptPreview(params: {
       ? [
           `ROLE: ${roleName}.`,
           `You own architecture, planning, high-level design, task breakdown, and code review.`,
-          `Your first action after greeting is to share a concrete implementation plan with the worker before any implementation starts.`,
-          `Keep the worker focused by delegating clear implementation steps, reviewing progress, and calling out risks or design corrections early.`,
+          `Your first action after greeting is to share a concrete implementation plan with the ${solo ? 'worker' : 'workers'} before any implementation starts.`,
+          solo
+            ? `Keep the worker focused by delegating clear implementation steps, reviewing progress, and calling out risks or design corrections early.`
+            : `Keep the workers focused by giving each of them a clearly separated piece of the work, reviewing progress, and calling out risks, overlap, or design corrections early.`,
         ]
       : [
           `ROLE: ${roleName}.`,
           `You own implementation, writing code, running tests, and reporting concrete execution progress.`,
           `After greeting, wait for the lead's plan before starting implementation work.`,
+          ...(solo ? [] : [`You are not the only worker: before you start on a piece, check the feed for what the others already claimed, and say what you are taking so nobody duplicates it.`]),
           `Once the lead shares a plan, execute it pragmatically, report what you changed, and surface blockers or test failures quickly.`,
         ]
   }
 
   return [
-    `You are ${params.agentName} in team "${params.teamName}" with teammate ${params.teammateNames.join(', ')}.`,
+    `You are ${params.agentName} in team "${params.teamName}" with ${mateWord} ${mateList}.`,
     `Task: ${params.description}`,
     ...roleInstructions,
     `COMMUNICATION RULES:`,
@@ -407,8 +433,8 @@ export function buildPromptPreview(params: {
     `5. If teammate shared findings, RESPOND to them`,
     `6. Keep alternating: analyze, share, read, respond, analyze`,
     `DONE PROTOCOL (important):`,
-    `7. When you believe the task is fully converged and there is nothing substantive left to say, explicitly propose closure to your teammate in a normal team-say message ("I think we're done because X — agree?").`,
-    `8. Only once your teammate has confirmed agreement, send a FINAL team-say whose message is EXACTLY the sentinel <<COLLAB_DONE>> (nothing else, no quotes, no prose). As soon as both teammates have sent <<COLLAB_DONE>>, the system auto-disbands the team and writes the summary — so do not send it prematurely.`,
+    `7. When you believe the task is fully converged and there is nothing substantive left to say, explicitly propose closure to your ${mateWord} in a normal team-say message ("I think we're done because X — agree?").`,
+    `8. Only once ${solo ? 'your teammate has' : `ALL ${mateCount} of your teammates have`} confirmed agreement, send a FINAL team-say whose message is EXACTLY the sentinel <<COLLAB_DONE>> (nothing else, no quotes, no prose). The team auto-disbands only after all ${agentTotal} agents have sent <<COLLAB_DONE>>, so do not send it prematurely${solo ? '' : ', and do not treat one teammate agreeing as the whole team agreeing'}.`,
     `9. Before sending <<COLLAB_DONE>>, make sure the important conclusions (recommendation, rationale, build list, layout, decisions) are actually present as long team-say messages in the transcript — that is what the summary will preserve. Do not keep insights only in your head.`,
     `Start NOW: greet your teammate with team-say, then begin.`,
   ].join(' ')
