@@ -34,6 +34,7 @@ ES="__ENSEMBLE_DIR__/scripts"
 | `collab-replay.sh` | Replay a finished session in the terminal |
 | `collab-livefeed.sh` | Live colored feed (non-tmux) |
 | `collab-cleanup.sh` | Remove old finished runtime dirs (dry-run by default) |
+| `open-herdr-monitor.sh` | Open the monitor in a herdr pane, called by launch |
 | `collab-preflight.sh` | Auth/DNS/service checks, auto-run by launch |
 | `collab-postcheck.sh` | Agent health check ~30s after spawn, auto-armed by launch |
 
@@ -52,7 +53,9 @@ All collab artifacts live in `/tmp/ensemble/<TEAM_ID>/`:
 
 ### Step 0: Detect environment
 ```bash
-if [ -n "$TMUX" ]; then
+if [ "${HERDR_ENV:-}" = "1" ]; then
+  echo "HERDR"
+elif [ -n "$TMUX" ]; then
   echo "TMUX_YES"
 elif [ "$(uname)" = "Darwin" ] && [ "${TERM_PROGRAM:-}" = "iTerm.app" ]; then
   echo "ITERM_NATIVE"
@@ -61,12 +64,22 @@ else
 fi
 ```
 
-Three monitor modes:
+Four monitor modes:
+- `HERDR` — inside a herdr workspace; `collab-launch.sh` asks herdr for the split
 - `TMUX_YES` — already inside tmux; `collab-launch.sh` opens a split pane right
 - `ITERM_NATIVE` — macOS iTerm2 without tmux; `collab-launch.sh` uses `osascript` to open a native iTerm split pane (no `tmux attach` needed)
 - `TMUX_NO` — fallback: detached tmux session the user must attach to
 
-Force a specific mode with `COLLAB_MONITOR=tmux|iterm|none` or change iTerm layout with `COLLAB_ITERM_MODE=split|tab|window` (default `split`).
+**Check `HERDR_ENV` first, and never conclude "iTerm" from `TERM_PROGRAM` alone.**
+herdr owns the terminal and draws its own panes inside a host session, but passes
+`TERM_PROGRAM=iTerm.app` straight through. An AppleScript split then opens a real iTerm
+pane outside the layout the user is watching: it succeeds, reports success, and is never
+seen. `HERDR_ENV=1` is the reliable signal (`HERDR_PANE_ID`, `HERDR_TAB_ID` and
+`HERDR_WORKSPACE_ID` name the exact pane).
+
+Force a specific mode with `COLLAB_MONITOR=herdr|tmux|iterm|none`, change the herdr layout
+with `COLLAB_HERDR_MODE=split|tab`, or the iTerm layout with
+`COLLAB_ITERM_MODE=split|tab|window` (both default `split`).
 
 ### Step 1: Launch the team
 ```bash
@@ -114,6 +127,7 @@ global file that a concurrent collab overwrites.
 
 ### Step 2: Tell the user where the monitor is
 
+- `HERDR`: "Team is live in the new herdr pane on the right."
 - `TMUX_YES`: "Team is live in the right tmux pane."
 - `ITERM_NATIVE`: "Team is live in the new iTerm pane on the right."
 - `TMUX_NO`: "`tmux attach -t ensemble-$TEAM_ID` — live TUI monitor (steer, disband, scroll)"
@@ -156,6 +170,12 @@ Use markdown bold for agent names. Show the FULL message content (up to 500 char
 ```bash
 TEAM_ID="<id>" && RD="/tmp/ensemble/$TEAM_ID" && kill "$(cat "$RD/poller.pid" 2>/dev/null)" 2>/dev/null || true; kill "$(cat "$RD/bridge.pid" 2>/dev/null)" 2>/dev/null || true; tmux kill-session -t "ensemble-$TEAM_ID" 2>/dev/null || true
 ```
+
+#### If `HERDR`: background summary watcher
+
+Same as `TMUX_YES`: the monitor pane is visible to the user, so don't inline-poll. Wait for
+completion in the background and present the final summary. The monitor closes its own herdr
+pane on exit (pane id in `/tmp/ensemble/<TEAM_ID>/herdr-pane-id`), so no `tmux kill-session`.
 
 #### If `ITERM_NATIVE`: background summary watcher
 

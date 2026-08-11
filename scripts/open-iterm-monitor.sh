@@ -33,111 +33,128 @@ if [ -n "${ITERM_SESSION_ID:-}" ]; then
 fi
 echo "source_session=$SOURCE_SESSION_ID" >> "$LOG"
 
+# bash 3.2 (macOS system bash) cannot parse heredoc inside $() inside case, so
+# the AppleScript is written to a temp file first.
+#
+# All heredocs below are QUOTED (<<'OSA'). Session id and command travel as
+# osascript arguments and are read from argv. With an unquoted delimiter the
+# shell expanded the program text itself: the backticks in these very comments
+# ran as commands, which is where the stray "write: text is not logged in" and
+# "correct: command not found" in the log came from.
+_SCPT=$(mktemp /tmp/osa-collab-XXXXXX.applescript)
+trap 'rm -f "$_SCPT"' EXIT
+
 case "$MODE" in
   split)
-    # bash 3.2 (macOS system bash) cannot parse heredoc inside $() inside case.
-    # Workaround: write AppleScript to a temp file first, then run osascript on it.
-    _SCPT=$(mktemp /tmp/osa-split-XXXXXX.applescript)
-    cat > "$_SCPT" <<OSA
-tell application "iTerm2"
-  activate
-  delay 0.15
-  if (count of windows) is 0 then
-    create window with default profile
-  end if
-  set winCount to count of windows
-  -- Prefer splitting the session the user actually invoked collab from
-  -- (via ITERM_SESSION_ID). Fall back to the current session of the
-  -- frontmost window if that session cannot be found.
-  set sourceId to "${SOURCE_SESSION_ID}"
-  set foundSession to missing value
-  set foundWindow to missing value
-  if sourceId is not "" then
-    repeat with w in windows
-      repeat with t in tabs of w
-        repeat with s in sessions of t
-          if (id of s as string) is sourceId then
-            set foundSession to s
-            set foundWindow to w
-            exit repeat
-          end if
+    cat > "$_SCPT" <<'OSA'
+on run argv
+  set sourceId to item 1 of argv
+  set cmdText to item 2 of argv
+  tell application "iTerm2"
+    activate
+    delay 0.15
+    if (count of windows) is 0 then
+      create window with default profile
+    end if
+    set winCount to count of windows
+    -- Prefer splitting the session the user actually invoked collab from
+    -- (via ITERM_SESSION_ID). Fall back to the current session of the
+    -- frontmost window if that session cannot be found.
+    set foundSession to missing value
+    set foundWindow to missing value
+    set foundTab to missing value
+    if sourceId is not "" then
+      repeat with w in windows
+        repeat with t in tabs of w
+          repeat with s in sessions of t
+            if (id of s as string) is sourceId then
+              set foundSession to s
+              set foundWindow to w
+              set foundTab to t
+              exit repeat
+            end if
+          end repeat
+          if foundSession is not missing value then exit repeat
         end repeat
         if foundSession is not missing value then exit repeat
       end repeat
-      if foundSession is not missing value then exit repeat
-    end repeat
-  end if
-  if foundSession is missing value then
-    set theWindow to first window
-    set foundWindow to theWindow
-    tell theWindow
-      set foundSession to current session
+    end if
+    if foundSession is missing value then
+      set foundWindow to first window
+      tell foundWindow
+        set foundSession to current session
+        set foundTab to current tab
+      end tell
+    end if
+    set winId to id of foundWindow
+    set tabCount to count of tabs of foundWindow
+    tell foundSession
+      set newSession to (split vertically with default profile)
+      set newId to id of newSession
+      -- Wait for the spawned shell (zsh) to fully boot before writing.
+      -- Without this, a fast write lands its first chars before the shell
+      -- prompt is ready; zsh's autocorrect then mangles the input
+      -- (e.g. "cd ..." into "rcd ...") and asks the user to confirm.
+      -- 1.5s plus a leading empty line absorbs any stray race-character.
+      delay 1.5
+      tell newSession
+        write text ""
+        delay 0.2
+        write text cmdText
+      end tell
     end tell
-  end if
-  set winId to id of foundWindow
-  set tabCount to count of tabs of foundWindow
-  tell foundSession
-    set newSession to (split vertically with default profile)
-    set newId to id of newSession
-    -- Wait for the spawned shell (zsh) to fully boot before writing.
-    -- Without this, fast `write text` lands its first chars before the
-    -- shell prompt is ready; zsh's `correct` plugin then mangles the
-    -- input (e.g. "cd ..." -> "rcd ...") and asks the user to confirm.
-    -- 1.5s + leading empty line absorbs any stray race-character.
-    delay 1.5
-    tell newSession
-      write text ""
-      delay 0.2
-      write text "${CMD}"
-    end tell
+    -- Bring the monitor into view. The split lands next to the session that
+    -- launched collab, which is often NOT the tab the user is looking at, so
+    -- without this the pane opens correctly and is never seen.
+    try
+      tell foundTab to select
+    end try
+    return "windows=" & winCount & " window_id=" & winId & " tabs_in_window=" & tabCount & " new_session_id=" & newId
   end tell
-  return "windows=" & winCount & " window_id=" & winId & " tabs_in_window=" & tabCount & " new_session_id=" & newId
-end tell
+end run
 OSA
-    if RESULT=$(osascript "$_SCPT" 2>>"$LOG"); then
-      rm -f "$_SCPT"
-      echo "rc=0 result=$RESULT" >> "$LOG"
-      echo "$RESULT"
-    else
-      RC=$?
-      rm -f "$_SCPT"
-      echo "rc=$RC — zie $LOG" >&2
-      exit 5
-    fi
     ;;
   tab)
-    osascript 2>>"$LOG" <<OSA
-tell application "iTerm2"
-  activate
-  delay 0.1
-  if (count of windows) is 0 then
-    create window with default profile
-  end if
-  tell first window
-    set newTab to (create tab with default profile)
-    delay 1.5
-    tell current session of newTab
-      write text ""
-      delay 0.2
-      write text "${CMD}"
+    cat > "$_SCPT" <<'OSA'
+on run argv
+  set cmdText to item 2 of argv
+  tell application "iTerm2"
+    activate
+    delay 0.1
+    if (count of windows) is 0 then
+      create window with default profile
+    end if
+    tell first window
+      set newTab to (create tab with default profile)
+      delay 1.5
+      tell current session of newTab
+        write text ""
+        delay 0.2
+        write text cmdText
+      end tell
+      return "new_tab_session=" & (id of current session of newTab as string)
     end tell
   end tell
-end tell
+end run
 OSA
     ;;
   window)
-    osascript 2>>"$LOG" <<OSA
-tell application "iTerm2"
-  activate
-  delay 0.1
-  set newWindow to (create window with default profile)
-  delay 1.5
-  tell current session of newWindow
-    write text ""
-    delay 0.2
-    write text "${CMD}"
+    cat > "$_SCPT" <<'OSA'
+on run argv
+  set cmdText to item 2 of argv
+  tell application "iTerm2"
+    activate
+    delay 0.1
+    set newWindow to (create window with default profile)
+    delay 1.5
+    tell current session of newWindow
+      write text ""
+      delay 0.2
+      write text cmdText
+    end tell
+    return "new_window_session=" & (id of current session of newWindow as string)
   end tell
-end tell
+end run
 OSA
     ;;
   *)
@@ -145,3 +162,12 @@ OSA
     exit 4
     ;;
 esac
+
+if RESULT=$(osascript "$_SCPT" "$SOURCE_SESSION_ID" "$CMD" 2>>"$LOG"); then
+  echo "rc=0 result=$RESULT" >> "$LOG"
+  echo "$RESULT"
+else
+  RC=$?
+  echo "rc=$RC — zie $LOG" >&2
+  exit 5
+fi

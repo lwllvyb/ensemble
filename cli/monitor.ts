@@ -463,6 +463,27 @@ class Monitor {
     process.stdout.write(cursor.home)
     process.stdin.setRawMode?.(false)
     this.closeITermSessionIfAny()
+    this.closeHerdrPaneIfAny()
+  }
+
+  // Same idea as the iTerm cleanup, for a monitor launched into a herdr pane.
+  // herdr closes the pane on request, so no AppleScript walk is needed; the
+  // small delay lets this process exit first so herdr is not closing a pane
+  // whose foreground job is still running.
+  private closeHerdrPaneIfAny() {
+    try {
+      const idFile = `/tmp/ensemble/${this.teamId}/herdr-pane-id`
+      if (!fs.existsSync(idFile)) return
+      const paneId = fs.readFileSync(idFile, 'utf8').trim()
+      if (!paneId || !/^[\w:.-]+$/.test(paneId)) return
+      spawnSync(
+        'bash',
+        ['-c', `(sleep 0.8 && herdr pane close ${paneId} >/dev/null 2>&1) &`],
+        { stdio: 'ignore', timeout: 2000 },
+      )
+    } catch {
+      // Best effort: a monitor that cannot close its own pane is not a failure.
+    }
   }
 
   // If we were launched into an iTerm2 split pane, close that pane so the

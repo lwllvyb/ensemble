@@ -133,10 +133,16 @@ nohup "$SCRIPT_DIR/ensemble-bridge.sh" "$TEAM_ID" "$API" >> "$BRIDGE_LOG_FILE" 2
 echo -e "  ${CHECK} Bridge started"
 
 # ─── 4. Monitor ───
-# Monitor selection order (override via COLLAB_MONITOR=tmux|iterm|none):
-#   1. tmux split   — if already inside a tmux session
-#   2. iTerm split  — on macOS when iTerm2 is the active terminal (or forced)
-#   3. tmux detached session — cross-platform fallback
+# Monitor selection order (override via COLLAB_MONITOR=herdr|tmux|iterm|none):
+#   1. herdr pane   — if running inside a herdr workspace
+#   2. tmux split   — if already inside a tmux session
+#   3. iTerm split  — on macOS when iTerm2 is the active terminal (or forced)
+#   4. tmux detached session — cross-platform fallback
+#
+# herdr comes first and must be checked before iTerm: herdr owns the terminal
+# and draws its own panes inside a host iTerm session, but passes TERM_PROGRAM
+# through unchanged. Trusting TERM_PROGRAM there opens a real iTerm split
+# outside the layout the user is watching, so the monitor is never seen.
 MONITOR_ENV_PREFIX=""
 for KEY in ENSEMBLE_URL ENSEMBLE_DATA_DIR ENSEMBLE_PORT ENSEMBLE_HOST ENSEMBLE_CORS_ORIGIN ENSEMBLE_AGENTS_CONFIG ENSEMBLE_AGENT_FLAGS ENSEMBLE_HOST_ID; do
   VALUE="${!KEY:-}"
@@ -147,10 +153,17 @@ done
 MONITOR_CMD="cd '$REPO_DIR' && ${MONITOR_ENV_PREFIX}node --import tsx cli/monitor.ts $TEAM_ID"
 MONITOR_PREF="${COLLAB_MONITOR:-auto}"
 
+use_herdr=false
+if [ "$MONITOR_PREF" = "herdr" ]; then
+  use_herdr=true
+elif [ "$MONITOR_PREF" = "auto" ] && [ "${HERDR_ENV:-}" = "1" ] && command -v herdr > /dev/null 2>&1; then
+  use_herdr=true
+fi
+
 use_iterm=false
 if [ "$MONITOR_PREF" = "iterm" ]; then
   use_iterm=true
-elif [ "$MONITOR_PREF" = "auto" ] && [ -z "${TMUX:-}" ] \
+elif [ "$MONITOR_PREF" = "auto" ] && [ "$use_herdr" = false ] && [ -z "${TMUX:-}" ] \
      && [ "$(uname)" = "Darwin" ] && [ "${TERM_PROGRAM:-}" = "iTerm.app" ]; then
   use_iterm=true
 fi
@@ -158,6 +171,25 @@ fi
 if [ "$MONITOR_PREF" = "none" ]; then
   echo -e "  ${CHECK} Monitor skipped ${D}(COLLAB_MONITOR=none)${R}"
   MONITOR_MODE="none"
+elif [ "$use_herdr" = true ]; then
+  HERDR_MODE="${COLLAB_HERDR_MODE:-split}"
+  if HERDR_RESULT=$("$SCRIPT_DIR/open-herdr-monitor.sh" "$REPO_DIR" "$TEAM_ID" "$HERDR_MODE" 2>/tmp/ensemble-herdr.err); then
+    echo -e "  ${CHECK} Monitor opened ${D}(herdr ${HERDR_MODE})${R}"
+    MONITOR_MODE="herdr"
+    HERDR_PANE=$(printf '%s\n' "$HERDR_RESULT" | sed -n 's/.*new_pane_id=\([^ ]*\).*/\1/p' | tail -1)
+    if [ -n "$HERDR_PANE" ]; then
+      printf '%s\n' "$HERDR_PANE" > "$RUNTIME_DIR/herdr-pane-id"
+    fi
+  else
+    echo -e "  ${D}herdr launch failed: $(head -1 /tmp/ensemble-herdr.err 2>/dev/null)${R}"
+    echo -e "  ${D}Falling back to tmux session...${R}"
+    MONITOR_SESSION="ensemble-$TEAM_ID"
+    tmux kill-session -t "$MONITOR_SESSION" 2>/dev/null || true
+    tmux new-session -d -s "$MONITOR_SESSION" -c "$REPO_DIR" \
+      "node --import tsx cli/monitor.ts $TEAM_ID"
+    echo -e "  ${CHECK} Monitor ready ${D}(tmux attach -t $MONITOR_SESSION)${R}"
+    MONITOR_MODE="session"
+  fi
 elif [ -n "${TMUX:-}" ] && [ "$MONITOR_PREF" != "iterm" ]; then
   tmux split-window -h -l '40%' "$MONITOR_CMD"
   echo -e "  ${CHECK} Monitor opened ${D}(right panel)${R}"
@@ -253,6 +285,8 @@ echo -e "  ${BD}${G}Team is live!${R} ${W}${AGENT_NAMES}${R} are collaborating."
 echo ""
 if [ "$MONITOR_MODE" = "split" ]; then
   echo -e "  ${D}┌─ Monitor (right panel) ───────────────┐${R}"
+elif [ "$MONITOR_MODE" = "herdr" ]; then
+  echo -e "  ${D}┌─ Monitor (herdr pane) ────────────────┐${R}"
 elif [ "$MONITOR_MODE" = "iterm" ]; then
   echo -e "  ${D}┌─ Monitor (iTerm native pane) ─────────┐${R}"
 elif [ "$MONITOR_MODE" = "none" ]; then
