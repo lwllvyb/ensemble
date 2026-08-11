@@ -84,7 +84,10 @@ herdr pane run "$NEW_PANE" \
   bash -lc "cd $(printf '%q' "$REPO_DIR") && exec ./node_modules/.bin/tsx cli/monitor.ts $(printf '%q' "$TEAM_ID")" \
   >> "$LOG" 2>&1
 
-herdr pane rename "$NEW_PANE" "collab monitor" >> "$LOG" 2>&1 || true
+# Label the pane with the project directory, so a workspace with several panes
+# still shows which project this monitor belongs to.
+PROJECT_NAME=$(basename "$REPO_DIR")
+herdr pane rename "$NEW_PANE" "$PROJECT_NAME collab" >> "$LOG" 2>&1 || true
 
 echo "rc=0 pane=$NEW_PANE" >> "$LOG"
 echo "new_pane_id=$NEW_PANE"
