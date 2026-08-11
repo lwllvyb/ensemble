@@ -43,5 +43,14 @@
     "inputMethod": "sendKeys",
     "color": "cyan",
     "icon": "▣"
+  },
+  "grok": {
+    "name": "grok",
+    "command": "grok",
+    "flags": ["--always-approve", "--trust"],
+    "readyMarker": "❯",
+    "inputMethod": "pasteFromFile",
+    "color": "white",
+    "icon": "✕"
   }
 }

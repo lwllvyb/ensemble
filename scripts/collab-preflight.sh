@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 # collab-preflight.sh — Verify collab dependencies BEFORE spawning a team.
 #
+# Usage: collab-preflight.sh [agents-csv]
+#   agents-csv  which agents this run will spawn (also via COLLAB_AGENTS).
+#               Empty = the default codex + claude pair.
+#               Only the listed CLIs are checked, so a codex quota wall no
+#               longer blocks a grok+claude run.
+#
 # Exit codes:
 #   0 — all checks passed, safe to launch
 #   1 — service down (start required)
@@ -8,6 +14,7 @@
 #   3 — claude CLI broken (auth or binary issue)
 #   4 — codex CLI broken (auth or binary issue)
 #   5 — DNS/network issue
+#   6 — grok CLI broken (auth or binary issue)
 #
 # Each failure prints exactly what's wrong + the fix command.
 
@@ -15,6 +22,26 @@ set -uo pipefail
 
 API="${ENSEMBLE_URL:-http://localhost:23000}"
 SERVICE_MAX_AGE_HOURS="${COLLAB_SERVICE_MAX_AGE:-24}"
+
+# ─── Which agents does this run need? ───
+REQUESTED_AGENTS="${1:-${COLLAB_AGENTS:-}}"
+EXPLICIT_AGENTS=1
+if [ -z "$REQUESTED_AGENTS" ]; then
+  REQUESTED_AGENTS="codex,claude"
+  EXPLICIT_AGENTS=0
+fi
+
+# Lowercased once, so the matcher stays bash 3.2 safe (no ${var,,} on macOS).
+REQUESTED_LC=$(printf '%s' "$REQUESTED_AGENTS" | tr 'A-Z' 'a-z')
+
+# wants <name> — is this agent part of the run? Substring match mirrors
+# resolveAgentProgram() in lib/agent-config.ts, so "claude code" matches "claude".
+wants() {
+  case "$REQUESTED_LC" in
+    *"$1"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 
 R='\033[0m'; RED='\033[91m'; GRN='\033[92m'; YEL='\033[93m'; BD='\033[1m'
 
@@ -105,6 +132,10 @@ else
 fi
 
 # ─── 4. Codex CLI auth ───
+if ! wants codex; then
+  ok "Codex not in this run (agents: $REQUESTED_AGENTS) — skipping codex checks"
+  CODEX_DEAD=0
+else
 if ! command -v codex > /dev/null 2>&1; then
   fail 4 "codex binary not in PATH
      Fix: install codex CLI or check PATH"
@@ -172,6 +203,38 @@ PY
 else
   warn "Codex version.json niet gevonden (~/.codex/version.json) — startup-prompt-suppressie skipped"
 fi
+fi  # end: wants codex
+
+# ─── 4c. Grok CLI auth ───
+# Grok blocks on two interactive gates that would freeze a spawned pane:
+#   * the project-directory picker (killed by hints.project_picker_disabled)
+#   * the folder-trust dialog (killed by the --trust flag in agents.json)
+# Both are handled outside this check; here we only verify binary + auth.
+if wants grok; then
+  if ! command -v grok > /dev/null 2>&1; then
+    fail 6 "grok binary not in PATH
+     Fix: install the Grok CLI (https://x.ai) or check PATH"
+  fi
+  GROK_AUTH=$(timeout 20 grok models 2>&1 | head -1)
+  if echo "$GROK_AUTH" | grep -qiE "logged in"; then
+    ok "Grok authenticated: ${GROK_AUTH:0:60}"
+    GROK_DEAD=0
+  else
+    warn "Grok not authenticated. Status: ${GROK_AUTH:0:80}"
+    warn "  Fix: grok login"
+    GROK_DEAD=1
+  fi
+
+  # The project-directory picker blocks the very first turn in a fresh pane.
+  # It is a one-time hint in ~/.grok/config.toml; warn instead of failing, since
+  # a user who has already dismissed it manually is fine either way.
+  if [ -f "$HOME/.grok/config.toml" ] && grep -q "project_picker_disabled" "$HOME/.grok/config.toml"; then
+    ok "Grok project-picker suppressed"
+  else
+    warn "Grok project-picker not suppressed — the agent may hang on a directory dialog"
+    warn "  Fix: add   hints = { project_picker_disabled = true }   to ~/.grok/config.toml"
+  fi
+fi
 
 # ─── 5. Claude CLI auth — test in TMUX-context (where agents actually spawn) ───
 # REGRESSION 2026-05-13: previous test ran in caller shell. When the caller is a
@@ -179,7 +242,10 @@ fi
 # propagate to children. Result: preflight passed but spawned claude in tmux
 # was "Not logged in", agents died silently. This test now runs in the same
 # context as the real spawn (fresh tmux pane, unset CLAUDECODE).
-if ! command -v claude > /dev/null 2>&1; then
+if ! wants claude; then
+  ok "Claude not in this run (agents: $REQUESTED_AGENTS) — skipping claude checks"
+  CLAUDE_DEAD=0
+elif ! command -v claude > /dev/null 2>&1; then
   warn "claude binary not in PATH — Claude-2 will be disabled, codex-only mode"
   echo "codex" > /tmp/collab-agents-override.txt
 else
@@ -215,6 +281,26 @@ fi
 # ─── Decide which agents to spawn ───
 CODEX_DEAD="${CODEX_DEAD:-0}"
 CLAUDE_DEAD="${CLAUDE_DEAD:-0}"
+GROK_DEAD="${GROK_DEAD:-0}"
+
+# When the caller named its agents explicitly, never silently swap in a different
+# one: the user asked for these agents, so a dead one is a hard failure they need
+# to see. The auto-fallback below only applies to the implicit codex+claude pair.
+if [ "$EXPLICIT_AGENTS" = "1" ]; then
+  DEAD_LIST=""
+  [ "$CODEX_DEAD" = "1" ] && DEAD_LIST="$DEAD_LIST codex"
+  [ "$CLAUDE_DEAD" = "1" ] && DEAD_LIST="$DEAD_LIST claude"
+  [ "$GROK_DEAD" = "1" ] && DEAD_LIST="$DEAD_LIST grok"
+  if [ -n "$DEAD_LIST" ]; then
+    rm -f /tmp/collab-agents-override.txt
+    fail 3 "Requested agents unavailable:$DEAD_LIST
+     You asked for: $REQUESTED_AGENTS
+     Fix the agent above, or relaunch naming different agents."
+  fi
+  rm -f /tmp/collab-agents-override.txt
+  echo -e "  ${GRN}${BD}All preflight checks passed${R}"
+  exit 0
+fi
 
 if [ "$CODEX_DEAD" = "1" ] && [ "$CLAUDE_DEAD" = "1" ]; then
   rm -f /tmp/collab-agents-override.txt
