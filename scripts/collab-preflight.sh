@@ -198,7 +198,17 @@ if ! command -v codex > /dev/null 2>&1; then
   fail 4 "codex binary not in PATH
      Fix: install codex CLI or check PATH"
 fi
-CODEX_AUTH=$(codex login status 2>&1 | head -1)
+# 07-09-2026: met een timeout eromheen. De codex-binary uit cask 0.153.4 komt op
+# deze Mac niet door de dynamic linker heen (sample toont alleen _dyld_start), en
+# `codex login status` heeft zelf geen timeout. Elke launch bleef daardoor
+# oneindig hier hangen in plaats van netjes met exit 4 te falen, twee keer
+# waargenomen. Een preflight die niet kan falen is geen preflight.
+CODEX_AUTH=$(timeout 20 codex login status 2>&1 | head -1)
+if [ -z "$CODEX_AUTH" ]; then
+  fail 4 "codex reageert niet binnen 20 seconden (binary hangt, geen auth-probleem)
+     Check: timeout 10 codex --version   (exit 124 = hangt)
+     Fix:   brew reinstall --cask codex, of draai het team zonder codex"
+fi
 if echo "$CODEX_AUTH" | grep -qiE "logged in"; then
   ok "Codex authenticated: ${CODEX_AUTH:0:60}"
 else
