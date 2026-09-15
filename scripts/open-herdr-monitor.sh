@@ -51,29 +51,20 @@ esac
 
 printf '%s\n' "$CREATE_JSON" >> "$LOG"
 
-# The socket API answers with a JSON envelope; the pane id lives under
-# .result.pane.pane_id for a split and .result.tab (first pane) for a tab.
-NEW_PANE=$(printf '%s' "$CREATE_JSON" | python3 -c "
-import json, sys
-try:
-    data = json.load(sys.stdin)
-except Exception:
-    sys.exit(1)
-result = data.get('result', {})
-pane = result.get('pane') or {}
-pane_id = pane.get('pane_id')
-if not pane_id:
-    tab = result.get('tab') or {}
-    panes = tab.get('panes') or []
-    if panes:
-        pane_id = panes[0].get('pane_id')
-if not pane_id:
-    sys.exit(1)
-print(pane_id)
-" 2>>"$LOG") || {
-  echo "open-herdr-monitor: could not read new pane id from herdr response" >&2
+# herdr has moved this around between releases: a split answers with
+# result.pane, a tab create with result.root_pane, and older builds used
+# result.tab.panes[0]. Parsing lives in its own script so it can be tested
+# against all three, and so a shape we have not seen yet still resolves
+# instead of handing back an empty pane id. See tests/herdr-pane-id.test.ts.
+NEW_PANE=$(printf '%s' "$CREATE_JSON" | python3 "$(dirname "$0")/herdr-pane-id.py" 2>>"$LOG") || {
+  echo "open-herdr-monitor: could not read new pane id from herdr response (see $LOG)" >&2
   exit 5
 }
+
+if [ -z "$NEW_PANE" ]; then
+  echo "open-herdr-monitor: herdr returned an empty pane id (see $LOG)" >&2
+  exit 5
+fi
 
 echo "new_pane=$NEW_PANE" >> "$LOG"
 
