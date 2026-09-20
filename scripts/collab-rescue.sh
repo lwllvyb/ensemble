@@ -27,7 +27,10 @@ if [ -z "$TEAM_ID" ]; then
   exit 1
 fi
 
-RD="/tmp/ensemble/$TEAM_ID"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=collab-paths.sh
+. "$SCRIPT_DIR/collab-paths.sh"
+RD="$(collab_runtime_dir "$TEAM_ID")"
 
 if [ ! -d "$RD" ]; then
   echo "FOUT: team-dir bestaat niet: $RD" >&2

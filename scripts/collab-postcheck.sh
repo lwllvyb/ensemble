@@ -13,7 +13,10 @@ set -uo pipefail
 
 TEAM_ID="${1:?Usage: collab-postcheck.sh <team-id> [wait-seconds]}"
 WAIT="${2:-30}"
-RD="/tmp/ensemble/$TEAM_ID"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=collab-paths.sh
+. "$SCRIPT_DIR/collab-paths.sh"
+RD="$(collab_runtime_dir "$TEAM_ID")"
 
 R='\033[0m'; RED='\033[91m'; GRN='\033[92m'; YEL='\033[93m'; BD='\033[1m'
 
