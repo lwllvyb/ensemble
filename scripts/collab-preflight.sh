@@ -182,6 +182,15 @@ elif echo "$TMUX_DNS_RESULT" | grep -qE "gaierror|Name or service not known|Unkn
     warn "  Manual fix: detach clients (Ctrl+B d) en re-run /collab"
     fail 5 "TMUX DNS dead and clients attached — cannot auto-fix"
   fi
+  # list-clients telt alleen attached clients, en agent-panes draaien detached.
+  # Zonder deze controle sloopt een nieuwe collab de panes van een team dat
+  # gewoon aan het werk is.
+  COLLAB_SESSIONS=$(tmux ls 2>/dev/null | grep -c '^collab-' || true)
+  if [ "${COLLAB_SESSIONS:-0}" -gt 0 ]; then
+    fail 5 "TMUX DNS is stale, maar er draaien $COLLAB_SESSIONS collab-sessies.
+     Die zouden door een kill-server verdwijnen. Rond die teams eerst af, of draai
+     zelf: tmux kill-server"
+  fi
   tmux kill-server 2>/dev/null
   sleep 0.5
   ok "TMUX server killed; new spawns will inherit fresh resolver"
@@ -219,26 +228,33 @@ fi
 # ─── 4a. Codex quota probe (regression 2026-05-13: 'usage limit hit' isn't ──
 #         caught by `codex login status` — only by an actual exec call). Run a
 #         minimal `codex exec` and look for the limit-message. Costs ~1 token.
-# The probe demands a sentinel back rather than merely checking for error words.
-# Testing "did codex answer" is not the same as "does codex work": an auth mode
-# that rejects the configured model answers with an ordinary HTTP 400, contains
-# no quota wording, and used to be reported as healthy — after which the agent
-# spawned, reported ready, and then sat silent for the whole session.
+# The probe demands a berekend antwoord terug in plaats van alleen te checken
+# op foutwoorden. Testing "did codex answer" is not the same as "does codex
+# work": an auth mode that rejects the configured model answers with an
+# ordinary HTTP 400, contains no quota wording, and used to be reported as
+# healthy, after which the agent spawned, reported ready, and then sat silent
+# for the whole session.
 # (2026-08-11: a ChatGPT-auth account rejecting an API-only model name did
 # exactly this.)
+# De prompt vroeg eerst letterlijk om de sentinel PROBE-OK-7391 terug te typen,
+# en de grep zocht diezelfde string. Codex echoot elke prompt terug onder het
+# kopje 'user', dus die string stond altijd in de uitvoer, ook met een
+# ingetrokken token (401 op alles gaf toch groen licht, gemeten). Nu vraagt de
+# prompt om een som die codex moet uitrekenen, en de grep zoekt de uitkomst,
+# die nergens in de prompttekst voorkomt.
 # stdin MUST be /dev/null (2026-08-14, codex-cli 0.147.0): with an inherited
 # stdin that stays open, `codex exec` treats it as extra prompt input, prints
 # "Reading additional input from stdin..." and blocks until the timeout kills
-# it. The probe then finds no sentinel and disables a perfectly healthy codex.
+# it. The probe then finds no answer and disables a perfectly healthy codex.
 # Only shows up when preflight is called from a caller whose stdin is a live
 # pipe (an agent shell, CI), which is exactly where a false negative hurts.
 CODEX_PROBE_OUT=$(timeout 40 codex exec --dangerously-bypass-approvals-and-sandbox \
-  "Reply with exactly this and nothing else: PROBE-OK-7391" < /dev/null 2>&1)
+  "Antwoord met alleen het resultaat van 7391 plus 1. Geen andere tekst." < /dev/null 2>&1)
 if echo "$CODEX_PROBE_OUT" | grep -qiE "hit your usage limit|usage limit|rate.?limit|quota"; then
   RESET_TIME=$(echo "$CODEX_PROBE_OUT" | grep -oE "try again at[^.]*\." | head -1)
   warn "Codex quota dead: ${RESET_TIME:-(unknown reset time)} — codex disabled this run"
   CODEX_DEAD=1
-elif ! echo "$CODEX_PROBE_OUT" | grep -q "PROBE-OK-7391"; then
+elif ! echo "$CODEX_PROBE_OUT" | grep -q "7392"; then
   # Drop hook/MCP chatter so the real error stays visible.
   CODEX_TAIL=$(echo "$CODEX_PROBE_OUT" | grep -viE '^hook:|rmcp::|^tokens used' | tail -3)
   warn "Codex answered but produced nothing usable — codex disabled this run"
@@ -247,7 +263,7 @@ elif ! echo "$CODEX_PROBE_OUT" | grep -q "PROBE-OK-7391"; then
   warn "  Check: codex login status  +  the model in ~/.codex/config.toml"
   CODEX_DEAD=1
 else
-  ok "Codex works (probe returned its sentinel)"
+  ok "Codex works (probe computed the answer)"
   CODEX_DEAD=0
 fi
 
