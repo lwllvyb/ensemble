@@ -71,12 +71,54 @@ if ! curl -sf "$API/api/v1/health" > /dev/null 2>&1; then
 fi
 ok "Ensemble service responding"
 
-# ─── 2. Service age (stale state catches the 2026-05-08 issue) ───
-# This whole block used to be a no-op on Linux, which is the opposite of harmless: it is the
-# check that catches a service started in a shell without credentials, the cause of several
-# silent all-agents-dead sessions. Two macOS assumptions hid it. `pgrep` is not installed on a
-# minimal image (procps), and `date -j -f` is BSD-only, so on GNU date the substitution came
-# back empty and the age comparison was skipped without a word.
+# ─── 2. Service health (bereikbare credential-opslag, niet leeftijd) ───
+# Leeftijd was een proxy voor de vraag die er echt toe doet: kan deze service
+# bij de credentials van de agents die hij straks spawnt. Een server die
+# dertig uur probleemloos draait hoeft niet herstart, en een server die tien
+# minuten geleden met een verkeerde HOME is gestart (de 2026-05-08 stale-state
+# issue: agents spawnen met kapotte auth) glipte met een leeftijdscheck alleen
+# juist door. Let op wat dit wel en niet meet: het health-endpoint zegt of de
+# opslag leesbaar is, niet of het token daarin nog geldig is. Die tweede vraag
+# beantwoorden de live probes verderop, die claude en codex echt aanroepen.
+# De leeftijdscheck
+# hieronder blijft staan als vangnet voor als die uitvraag niets bruikbaars
+# teruggeeft (server te oud voor deze fix, netwerkhikje, kapotte JSON).
+HEALTH=$(curl -sf "$API/api/v1/health" 2>/dev/null || echo "")
+CREDS=$(printf '%s' "$HEALTH" | python3 -c "import json,sys; print(json.load(sys.stdin).get('credentialStore','onbekend'))" 2>/dev/null || echo "onbekend")
+
+if [ "$CREDS" = "unreachable" ]; then
+  LAUNCHD_LABEL="${ENSEMBLE_LAUNCHD_LABEL:-dev.ensemble.server}"
+  LAUNCHD_TARGET="gui/$(id -u)/$LAUNCHD_LABEL"
+  if command -v launchctl > /dev/null 2>&1 && launchctl print "$LAUNCHD_TARGET" > /dev/null 2>&1; then
+    warn "Service kan niet bij de credential-opslag, herstarten via launchd ($LAUNCHD_LABEL)"
+    launchctl kickstart -k "$LAUNCHD_TARGET"
+    RESTARTED=0
+    for _ in $(seq 1 10); do
+      sleep 1
+      if curl -sf "$API/api/v1/health" > /dev/null 2>&1; then RESTARTED=1; break; fi
+    done
+    if [ "$RESTARTED" = 1 ]; then
+      ok "Ensemble service restarted (fresh process under launchd)"
+    else
+      fail 2 "Ensemble service did not come back within 10s after launchctl kickstart; check /tmp/ensemble-server.log"
+    fi
+  else
+    fail 2 "Service draait zonder bruikbare credentials, en er is geen launchd-target om te herstarten.
+     Fix: pkill -f 'tsx server.ts' && cd ~/Documents/ensemble && nohup ./node_modules/.bin/tsx server.ts > /tmp/ensemble-server.log 2>&1 &
+     Of installeer de launchd-agent (scripts/install-launchd.sh), dan herstart preflight 'm voortaan zelf."
+  fi
+elif [ "$CREDS" = "ok" ]; then
+  UP=$(printf '%s' "$HEALTH" | python3 -c "import json,sys; print(json.load(sys.stdin).get('uptimeSeconds',0))" 2>/dev/null || echo 0)
+  ok "Service gezond (draait $((UP / 3600))h, credentials in orde)"
+else
+  warn "Kon de gezondheid van de service niet uitlezen, val terug op de leeftijdscheck"
+  # Onderstaande blok is de oorspronkelijke leeftijdscheck, ongewijzigd, nu
+  # alleen nog bereikt als de health-uitvraag hierboven niets bruikbaars gaf.
+  # This whole block used to be a no-op on Linux, which is the opposite of harmless: it is the
+  # check that catches a service started in a shell without credentials, the cause of several
+  # silent all-agents-dead sessions. Two macOS assumptions hid it. `pgrep` is not installed on a
+  # minimal image (procps), and `date -j -f` is BSD-only, so on GNU date the substitution came
+  # back empty and the age comparison was skipped without a word.
 if command -v pgrep > /dev/null 2>&1; then
   SERVER_PID=$(pgrep -f "tsx server.ts" | head -1)
 else
@@ -128,6 +170,7 @@ if [ -n "$SERVER_PID" ]; then
   fi
 else
   warn "Could not find the server process — stale-service check skipped"
+fi
 fi
 
 # ─── 3. DNS reachability ───
