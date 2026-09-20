@@ -25,18 +25,16 @@ if [ ! -d "$RD" ]; then
   exit 1
 fi
 
-# Find this team's tmux sessions (codex-1, claude-2, etc.)
-# Sessions are named: collab-<timestamp>-<random>-<agent>
-# Match by team prefix: scan tmux for any session matching the team-id prefix
-# Actually ensemble names sessions: collab-<TS>-<RAND>-<agent>. Match via /tmp marker.
-# Easier: read team-id file in $RD/team-id (created by collab-launch)
-# Fallback: look up via TEAM_PREFIX env
-
-# The launcher leaves session names matching the timestamp portion of team-name.
-# We grep all collab- sessions whose suffix matches an agent role.
-SESSIONS=$(tmux ls 2>/dev/null | grep -oE "^collab-[0-9]+-[0-9]+-[a-z]+-[0-9]+" | sort -u)
+# Alleen de sessies van dit team. Eerder stond hier een tmux-scan op de vorm van
+# de sessienaam, waardoor een fout in team A alle sessies van team B meenam.
+if [ -f "$RD/sessions" ]; then
+  SESSIONS=$(cat "$RD/sessions")
+else
+  echo -e "${YEL}!${R} Geen sessieregister voor $TEAM_ID (ouder team?), postcheck slaat over"
+  exit 0
+fi
 if [ -z "$SESSIONS" ]; then
-  echo -e "${YEL}!${R} No collab tmux sessions found (already cleaned up?)"
+  echo -e "${YEL}!${R} Sessieregister is leeg, niets te controleren"
   exit 0
 fi
 
@@ -49,10 +47,6 @@ ERROR_LOG=""
 for s in $SESSIONS; do
   PANE_OUT=$(tmux capture-pane -t "$s" -p 2>/dev/null || true)
   if [ -z "$PANE_OUT" ]; then continue; fi
-
-  # Skip sessions that aren't part of this team (other teams may exist)
-  # Compare agent prompt files in $RD/prompts/ to confirm
-  AGENT_NAME="${s##*-collab-*-}"  # imperfect — best effort
 
   # Check for known fatal error patterns
   if echo "$PANE_OUT" | grep -qiE "Not logged in|Please run /login"; then
