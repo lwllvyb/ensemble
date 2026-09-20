@@ -103,13 +103,13 @@ if [ "$CREDS" = "unreachable" ]; then
       fail 2 "Ensemble service did not come back within 10s after launchctl kickstart; check /tmp/ensemble-server.log"
     fi
   else
-    fail 2 "Service draait zonder bruikbare credentials, en er is geen launchd-target om te herstarten.
+    fail 2 "Service kan niet bij de credential-opslag, en er is geen launchd-target om te herstarten.
      Fix: pkill -f 'tsx server.ts' && cd ~/Documents/ensemble && nohup ./node_modules/.bin/tsx server.ts > /tmp/ensemble-server.log 2>&1 &
      Of installeer de launchd-agent (scripts/install-launchd.sh), dan herstart preflight 'm voortaan zelf."
   fi
-elif [ "$CREDS" = "ok" ]; then
+elif [ "$CREDS" = "readable" ]; then
   UP=$(printf '%s' "$HEALTH" | python3 -c "import json,sys; print(json.load(sys.stdin).get('uptimeSeconds',0))" 2>/dev/null || echo 0)
-  ok "Service gezond (draait $((UP / 3600))h, credentials in orde)"
+  ok "Service gezond (draait $((UP / 3600))h, komt bij de credential-opslag)"
 else
   warn "Kon de gezondheid van de service niet uitlezen, val terug op de leeftijdscheck"
   # Onderstaande blok is de oorspronkelijke leeftijdscheck, ongewijzigd, nu
