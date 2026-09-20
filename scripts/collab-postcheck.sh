@@ -7,7 +7,8 @@
 # Exit codes:
 #   0 — agents healthy (or messages already exchanged)
 #   1 — team-id not found
-#   2 — agent stuck in error state (kills team, prints diagnosis)
+#   2 — agent stuck in error state (kills team, prints diagnosis), of nul
+#       berichten na de wachttijd (team blijft leven, roep collab-rescue.sh aan)
 
 set -uo pipefail
 
@@ -85,9 +86,11 @@ if [ "$ERRORS_FOUND" -gt 0 ]; then
 fi
 
 if [ "$MSG_COUNT" -eq 0 ]; then
-  echo -e "${YEL}!${R} No messages after ${WAIT}s — agents may be in deep work, monitor manually"
-else
-  echo -e "${GRN}✓${R} $MSG_COUNT messages exchanged — agents healthy"
+  echo -e "${RED}✗${R} Nul berichten na ${WAIT}s. Dat is geen diep werk maar een team dat niets doet." >&2
+  echo -e "  Opnieuw afleveren: scripts/collab-rescue.sh $TEAM_ID" >&2
+  exit 2
 fi
+
+echo -e "${GRN}✓${R} $MSG_COUNT messages exchanged — agents healthy"
 
 exit 0

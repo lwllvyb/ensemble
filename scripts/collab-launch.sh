@@ -115,9 +115,18 @@ rm -f "$PAYLOAD_FILE"
 
 TEAM_ID=$(echo "$RESULT" | python3 -c "import json,sys; print(json.load(sys.stdin)['team']['id'])")
 RUNTIME_DIR="$(collab_runtime_dir "$TEAM_ID")"
+# De aanroepers (de collab-skill, cleanroom-test.sh) lezen het team-id van de
+# laatste TEAM_ID=-regel uit onze stdout. Bij een vroege exit moet die regel er
+# dus ook staan: zonder team-id kan niemand het herstelpad volgen dat we in de
+# foutmelding aanraden.
+print_team_id_trailer() {
+  echo "TEAM_ID=$TEAM_ID"
+}
+
 MESSAGES_FILE="$(collab_messages_file "$TEAM_ID")"
 BRIDGE_PID_FILE="$(collab_bridge_pid "$TEAM_ID")"
 BRIDGE_LOG_FILE="$(collab_bridge_log "$TEAM_ID")"
+POLLER_PID_FILE="$(collab_poller_pid "$TEAM_ID")"
 FEED_FILE="$(collab_feed_file "$TEAM_ID")"
 TEAM_ID_FILE="$(collab_team_id_file "$TEAM_ID")"
 
@@ -138,7 +147,18 @@ fi
 
 # ─── 3. Bridge (writes its own PID file via single-instance guard) ───
 nohup "$SCRIPT_DIR/ensemble-bridge.sh" "$TEAM_ID" "$API" >> "$BRIDGE_LOG_FILE" 2>&1 &
-echo -e "  ${CHECK} Bridge started"
+# Even kijken of hij het overleeft. Hiervoor kwam het vinkje er altijd, ook als
+# de bridge meteen stuksloeg op zijn health check en het team dus nooit een
+# bericht naar de API zou sturen.
+sleep 0.3
+BRIDGE_PID=$(cat "$BRIDGE_PID_FILE" 2>/dev/null || echo "")
+if [ -n "$BRIDGE_PID" ] && kill -0 "$BRIDGE_PID" 2>/dev/null; then
+  echo -e "  ${CHECK} Bridge started ${D}(pid $BRIDGE_PID)${R}"
+else
+  echo -e "  \033[91m✗${R} Bridge stopte direct, zie $BRIDGE_LOG_FILE" >&2
+  print_team_id_trailer
+  exit 4
+fi
 
 # ─── 4. Monitor ───
 # Monitor selection order (override via COLLAB_MONITOR=herdr|tmux|iterm|none):
@@ -235,10 +255,23 @@ fi
 
 # ─── 5. Background poller (writes its own PID file, stops when the team is over) ───
 nohup "$SCRIPT_DIR/collab-poller.sh" "$TEAM_ID" "$API" > /dev/null 2>&1 &
+# Zelfde controle als bij de bridge: zonder deze check kreeg de poller ook een
+# vinkje terwijl hij meteen kon zijn gestopt (bijvoorbeeld omdat $RUNTIME_DIR
+# nog niet bestond op het moment dat hij zijn pid-bestand probeerde te zetten).
+sleep 0.3
+POLLER_PID=$(cat "$POLLER_PID_FILE" 2>/dev/null || echo "")
+if [ -n "$POLLER_PID" ] && kill -0 "$POLLER_PID" 2>/dev/null; then
+  echo -e "  ${CHECK} Poller started ${D}(pid $POLLER_PID)${R}"
+else
+  echo -e "  \033[91m✗${R} Poller stopte direct" >&2
+  print_team_id_trailer
+  exit 4
+fi
 
 # ─── 6. Wait for agents ───
+AGENT_WAIT_SECS=12
 echo -ne "  ${SPIN} Agents spawning..."
-for _ in $(seq 1 12); do
+for _ in $(seq 1 "$AGENT_WAIT_SECS"); do
   sleep 1
   MC=$(wc -l < "$MESSAGES_FILE" 2>/dev/null | tr -d ' ' || echo "0")
   [ "${MC:-0}" -gt "0" ] && break
@@ -276,7 +309,20 @@ names=[a['name'] for a in json.load(sys.stdin)['team']['agents']][:4]
 text='steer ' + ' / '.join(names)
 print(text if len(text) <= 31 else text[:30] + '…')
 " 2>/dev/null || echo "steer agents")
-echo -e "  ${BD}${G}Team is live!${R} ${W}${AGENT_NAMES}${R} are collaborating."
+# "Team is live!" alleen bij bewijs. Hiervoor werd deze melding altijd gedrukt,
+# ook als de wachtlus hierboven net had vastgesteld dat er nul berichten waren:
+# de postcheck meldde daarna "agents may be in deep work", wat een lege pane
+# niet is.
+if team_has_evidence "$RUNTIME_DIR"; then
+  echo -e "  ${BD}${G}Team is live!${R} ${W}${AGENT_NAMES}${R} are collaborating."
+else
+  echo -e "  ${BD}\033[93mTeam gestart, maar nog geen enkel bericht na ${AGENT_WAIT_SECS}s.${R}" >&2
+  echo -e "  Dat is hetzelfde beeld als een prompt die de TUI niet heeft gehaald." >&2
+  echo -e "  Controleer met: tmux attach -t \$(head -1 \"$RUNTIME_DIR/sessions\")" >&2
+  echo -e "  Opnieuw afleveren: scripts/collab-rescue.sh $TEAM_ID" >&2
+  print_team_id_trailer
+  exit 3
+fi
 echo ""
 if [ "$MONITOR_MODE" = "split" ]; then
   echo -e "  ${D}┌─ Monitor (right panel) ───────────────┐${R}"

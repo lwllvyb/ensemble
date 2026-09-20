@@ -67,3 +67,11 @@ collab_finished_marker() {
   local team_id="${1:?team id required}"
   printf '%s/.finished\n' "$(collab_runtime_dir "$team_id")"
 }
+
+# Bewijs dat een team echt leeft: minstens één regel in messages.jsonl.
+# Zonder deze functie meldde launch "Team is live!" terwijl hij net zelf had
+# vastgesteld dat er nul berichten waren.
+team_has_evidence() {
+  local rd="$1"
+  [ -s "$rd/messages.jsonl" ]
+}
