@@ -29,7 +29,7 @@ import {
 import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
-import { spawn } from 'child_process'
+import { spawn, execFileSync } from 'child_process'
 import { createWorktree, mergeWorktree, destroyWorktree, type WorktreeInfo } from '../lib/worktree-manager'
 import { runStagedWorkflow } from '../lib/staged-workflow'
 
@@ -232,6 +232,11 @@ class EnsembleService {
         void writeDisbandSummary(team.id, { failureReason: reason }).catch(err =>
           console.error(`[Ensemble] Stale summary failed for ${team.id}:`, err),
         )
+        // Een team dat op disbanded gaat zonder dat zijn processen stoppen, wordt
+        // daarna door de watchdog en checkIdleTeams overgeslagen omdat die op
+        // status 'active' filteren. De tmux-sessies en de poller blijven dan voor
+        // altijd draaien.
+        this.stopTeamProcesses(team.id)
         updateTeam(team.id, { ...team, status: 'disbanded' })
         count++
       }
@@ -239,6 +244,33 @@ class EnsembleService {
     if (count > 0) {
       console.log(`[Ensemble] Startup cleanup: disbanded ${count} stale active team(s)`)
     }
+  }
+
+  // Killt de tmux-sessies uit het sessieregister en stopt bridge/poller via de
+  // gedeelde bash-functie stop_team_processes (scripts/collab-paths.sh). Puur
+  // best-effort: een ontbrekend register of een proces dat al weg is, is geen
+  // fout, dat gebeurt precies bij de oudere teams die dit moet opruimen.
+  private stopTeamProcesses(teamId: string): void {
+    try {
+      const sessions = fs.readFileSync(collabSessionsFile(teamId), 'utf8')
+        .split('\n')
+        .map(line => line.trim())
+        .filter(Boolean)
+      for (const session of sessions) {
+        try {
+          execFileSync('tmux', ['kill-session', '-t', session], { stdio: 'ignore' })
+        } catch { /* sessie bestond al niet meer */ }
+      }
+    } catch { /* geen sessieregister, bijvoorbeeld een ouder team */ }
+
+    try {
+      const pathsScript = path.join(__dirname, '../scripts/collab-paths.sh')
+      execFileSync(
+        'bash',
+        ['-c', '. "$1" && stop_team_processes "$2"', '_', pathsScript, collabRuntimeDir(teamId)],
+        { stdio: 'ignore' },
+      )
+    } catch { /* geen bridge/poller meer te stoppen */ }
   }
 
   async checkIdleTeams(): Promise<void> {

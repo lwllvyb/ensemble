@@ -159,6 +159,44 @@ describe('collab-cleanup.sh abandoned directories', () => {
     }
   })
 
+  it('stopt een bridge zonder pid-bestand via zijn commandoregel', async () => {
+    // Simuleert de wees die op de machine draaide: de oude trap deed
+    // `rm -f "$PID_FILE"` op elk signaal zonder ooit te exit'en, dus een kill
+    // van vóór taak 10 ruimde het pid-bestand op en liet het proces leven.
+    // Zonder pid-bestand moet stop_team_processes het toch vinden, via de
+    // commandoregel: ensemble-bridge.sh <team-id> <url>, zoals het script
+    // echt wordt aangeroepen.
+    const dir = path.join(root, 'team-orphan')
+    fs.mkdirSync(dir, { recursive: true })
+    const scriptPath = path.join(dir, 'ensemble-bridge.sh')
+    fs.writeFileSync(scriptPath, '#!/bin/sh\nsleep 30\n')
+    fs.chmodSync(scriptPath, 0o755)
+    const bridge = spawn(scriptPath, ['team-orphan', 'http://localhost:23000'], { detached: true, stdio: 'ignore' })
+    try {
+      stopTeamProcesses(dir)
+      expect(await waitDead(bridge, 3000), 'bridge zonder pid-bestand moet toch gestopt worden').toBe(true)
+    } finally {
+      bridge.kill('SIGKILL')
+    }
+  })
+
+  it('laat een proces van een ander team met rust, ook zonder pid-bestand', async () => {
+    const dir = path.join(root, 'team-orphan-2')
+    fs.mkdirSync(dir, { recursive: true })
+    const scriptPath = path.join(dir, 'ensemble-bridge.sh')
+    fs.writeFileSync(scriptPath, '#!/bin/sh\nsleep 30\n')
+    fs.chmodSync(scriptPath, 0o755)
+    // Zelfde scriptnaam, maar een ander team-id in de commandoregel: dit
+    // proces hoort niet bij "team-orphan-2" en mag niet worden aangeraakt.
+    const ander = spawn(scriptPath, ['een-ander-team', 'http://localhost:23000'], { detached: true, stdio: 'ignore' })
+    try {
+      stopTeamProcesses(dir)
+      expect(await waitDead(ander, 500), 'een proces van een ander team mag niet gestopt worden').toBe(false)
+    } finally {
+      ander.kill('SIGKILL')
+    }
+  })
+
   it('finishes with stats when there is nothing abandoned (empty array, bash 3.2)', () => {
     makeDir(root, 'done', { 'messages.jsonl': '{}\n', '.finished': 't' }, true)
     const out = run(root, '--force')

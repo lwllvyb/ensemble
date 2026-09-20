@@ -87,22 +87,49 @@ team_has_evidence() {
 # op de scriptnaam die bij bridge/poller hoort. Komt die niet overeen, dan is
 # de pid vermoedelijk hergebruikt door iets anders; het pid-bestand wordt dan
 # opgeruimd zonder dat proces aan te raken.
+#
+# Zonder (geldig) pid-bestand wordt alsnog gezocht op de commandoregel: de
+# oude trap deed "rm -f $PID_FILE" op elk signaal zonder ooit te exit'en, dus
+# een kill van vóór de signaal-fix ruimde het pid-bestand op en liet het
+# proces gewoon leven. Zulke wezen zijn voor geen enkel pid-bestand-mechanisme
+# nog vindbaar. Het team-id staat letterlijk in de aanroep (ensemble-bridge.sh
+# <team-id> <url>), dus scriptnaam + team-id als los argument identificeren
+# het proces net zo streng als de pid-route hierboven.
 stop_team_processes() {
-  local rd="$1" naam pid wacht verwacht cmd
-  for naam in bridge poller; do
-    [ -f "$rd/$naam.pid" ] || continue
-    pid=$(cat "$rd/$naam.pid" 2>/dev/null)
-    case "$pid" in ''|*[!0-9]*) rm -f "$rd/$naam.pid"; continue ;; esac
+  local rd="$1" team_id naam pid wacht verwacht cmd kandidaat_pid kandidaat_cmd
+  team_id="$(basename "$rd")"
 
+  for naam in bridge poller; do
     case "$naam" in
       bridge) verwacht="ensemble-bridge.sh" ;;
       poller) verwacht="collab-poller.sh" ;;
     esac
-    cmd=$(ps -p "$pid" -o command= 2>/dev/null)
-    case "$cmd" in
-      *"$verwacht"*) ;;
-      *) rm -f "$rd/$naam.pid"; continue ;;
-    esac
+
+    pid=""
+    if [ -f "$rd/$naam.pid" ]; then
+      pid=$(cat "$rd/$naam.pid" 2>/dev/null)
+      case "$pid" in ''|*[!0-9]*) rm -f "$rd/$naam.pid"; pid="" ;; esac
+    fi
+
+    if [ -n "$pid" ]; then
+      cmd=$(ps -p "$pid" -o command= 2>/dev/null)
+      case "$cmd" in
+        *"$verwacht"*) ;;
+        *) rm -f "$rd/$naam.pid"; pid="" ;;
+      esac
+    fi
+
+    if [ -z "$pid" ]; then
+      while read -r kandidaat_pid kandidaat_cmd; do
+        [ -n "$kandidaat_pid" ] || continue
+        case " $kandidaat_cmd " in
+          *"$verwacht"*" $team_id "*) pid="$kandidaat_pid" ;;
+        esac
+        [ -n "$pid" ] && break
+      done < <(ps -eo pid=,command= 2>/dev/null)
+    fi
+
+    [ -z "$pid" ] && continue
 
     kill "$pid" 2>/dev/null || true
     wacht=0

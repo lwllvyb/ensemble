@@ -1130,3 +1130,114 @@ describe('alert-hub geheim', () => {
     expect(unhandled).toBeUndefined()
   })
 })
+
+// ─────────────────────────────────────────────────────
+// cleanupStaleTeams() — stopt processen, niet alleen de status
+// ─────────────────────────────────────────────────────
+describe('cleanupStaleTeams stopt achtergebleven processen', () => {
+  let tempRoot: string
+
+  beforeEach(() => {
+    tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ensemble-stale-'))
+    vi.resetModules()
+    vi.restoreAllMocks()
+  })
+
+  afterEach(() => {
+    vi.resetModules()
+    vi.restoreAllMocks()
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  })
+
+  it('kilt de tmux-sessies uit het register en stopt bridge/poller van een stale team', async () => {
+    // Een team ouder dan 2 uur, nog 'active': cleanupStaleTeams() zet dit op
+    // disbanded. Daarna filteren de watchdog en checkIdleTeams op status
+    // 'active' en slaan het voorgoed over, dus als de processen hier niet
+    // stoppen, blijven ze voor altijd draaien.
+    const team = makeTeam({
+      id: 'team-stale-1',
+      status: 'active',
+      createdAt: new Date(Date.now() - 3 * 3600 * 1000).toISOString(),
+    })
+    const runtimeDir = path.join(tempRoot, team.id)
+    fs.mkdirSync(runtimeDir, { recursive: true })
+    fs.writeFileSync(path.join(runtimeDir, 'sessions'), 'collab-1-1-claude-1\ncollab-1-1-codex-2\n')
+
+    const updateTeamMock = vi.fn()
+    const execCalls: string[][] = []
+
+    vi.doMock('../lib/ensemble-registry', () => ({
+      createTeam: vi.fn(),
+      getTeam: vi.fn(() => team),
+      updateTeam: updateTeamMock,
+      loadTeams: vi.fn(() => [team]),
+      appendMessage: vi.fn(),
+      getMessages: vi.fn(() => []),
+    }))
+    vi.doMock('../lib/agent-spawner', () => ({
+      spawnLocalAgent: vi.fn(),
+      killLocalAgent: vi.fn(async () => {}),
+      spawnRemoteAgent: vi.fn(),
+      killRemoteAgent: vi.fn(async () => {}),
+      postRemoteSessionCommand: vi.fn(async () => {}),
+      isRemoteSessionReady: vi.fn(async () => true),
+      getAgentTokenUsage: vi.fn(async () => 'unknown'),
+    }))
+    vi.doMock('../lib/hosts-config', () => ({
+      isSelf: vi.fn(() => true),
+      getHostById: vi.fn(),
+      getSelfHostId: vi.fn(() => 'local'),
+    }))
+    vi.doMock('../lib/agent-runtime', () => ({
+      getRuntime: vi.fn(),
+    }))
+    vi.doMock('../lib/agent-config', () => ({
+      resolveAgentProgram: vi.fn(),
+      resolveAgentProgramDetailed: vi.fn(),
+      availableAgentKeys: vi.fn(() => []),
+    }))
+    vi.doMock('../lib/collab-paths', () => ({
+      ensureCollabDirs: vi.fn(),
+      collabPromptFile: vi.fn(),
+      collabDeliveryFile: vi.fn(),
+      // writeDisbandSummary schrijft hierheen als een stale team geen berichten
+      // had; zonder een echt pad daarvoor gooit fs.mkdirSync op "undefined".
+      collabSummaryFile: vi.fn((teamId: string) => path.join(tempRoot, `${teamId}.summary.txt`)),
+      collabMessagesFile: vi.fn((teamId: string) => path.join(tempRoot, `${teamId}.messages.jsonl`)),
+      collabRuntimeDir: vi.fn((teamId: string) => path.join(tempRoot, teamId)),
+      collabFinishedMarker: vi.fn(),
+      collabBridgePosted: vi.fn(),
+      collabPollerPid: vi.fn(),
+      collabBridgeResult: vi.fn(),
+      collabSessionsFile: vi.fn((teamId: string) => path.join(tempRoot, teamId, 'sessions')),
+    }))
+    vi.doMock('../lib/worktree-manager', () => ({
+      createWorktree: vi.fn(),
+      mergeWorktree: vi.fn(),
+      destroyWorktree: vi.fn(),
+    }))
+    vi.doMock('../lib/staged-workflow', () => ({
+      runStagedWorkflow: vi.fn(),
+    }))
+    vi.doMock('child_process', () => ({
+      spawn: vi.fn(),
+      execFileSync: vi.fn((cmd: string, args: string[]) => {
+        execCalls.push([cmd, ...args])
+        return ''
+      }),
+    }))
+
+    await import('../services/ensemble-service')
+
+    const gekildeSessies = execCalls
+      .filter(c => c[0] === 'tmux' && c[1] === 'kill-session')
+      .map(c => c[3])
+    expect(gekildeSessies).toEqual(['collab-1-1-claude-1', 'collab-1-1-codex-2'])
+
+    const bashAanroep = execCalls.find(c => c[0] === 'bash')
+    expect(bashAanroep, 'stop_team_processes moet via bash aangeroepen worden').toBeDefined()
+    expect(bashAanroep).toContain(runtimeDir)
+
+    expect(updateTeamMock).toHaveBeenCalledWith(team.id, expect.objectContaining({ status: 'disbanded' }))
+  })
+})
