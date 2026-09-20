@@ -57,7 +57,9 @@ unavailable, 4 codex broken, 5 DNS, 6 grok broken.
 ### Named agents fail loudly, unnamed ones fall back
 
 If you name your agents (third argument to `collab-launch.sh`, or `COLLAB_AGENTS`), a broken one
-is a hard failure with exit 3. Only the implicit default pair gets the auto-fallback that drops
+is a hard failure: preflight reports the broken CLI with its own exit code (3 for claude, 4 for
+codex, 6 for grok) and collab-launch.sh then aborts with exit 1. Only the implicit default pair
+gets the auto-fallback that drops
 to codex-only or claude-only. This is deliberate: if you asked for three agents you want to hear
 that one is broken, not silently get two.
 
