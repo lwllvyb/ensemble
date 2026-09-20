@@ -4,6 +4,7 @@ import path from 'path'
 import { execFileSync } from 'child_process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { EnsembleMessage, EnsembleTeam, StagedWorkflowConfig } from '../types/ensemble'
+import { __testing } from '../services/ensemble-service'
 
 const TEAM_SAY_BIN = path.resolve(process.cwd(), 'scripts/team-say.sh')
 const TMP_ENSEMBLE_DIR = '/tmp/ensemble'
@@ -1078,5 +1079,54 @@ describe('CreateTeamRequest staged types', () => {
       agents: [{ program: 'codex' }],
     }
     expect(request.staged).toBeUndefined()
+  })
+})
+
+describe('alert-hub geheim', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('het hub-geheim staat niet in de URL', () => {
+    const src = fs.readFileSync(path.resolve(process.cwd(), 'services/ensemble-service.ts'), 'utf8')
+    expect(src).not.toMatch(/\?key=\$\{encodeURIComponent\(ALERT_HUB_SECRET\)\}/)
+  })
+
+  it('post naar de alert-hub zonder subproces, zodat het geheim niet in de argv staat', () => {
+    // Het lek was niet de query-parameter maar het curl-subproces dat de hele
+    // URL als argv meekreeg: argv is voor elke andere gebruiker op de machine
+    // leesbaar via ps. De hub zelf leest de sleutel uitsluitend uit de query
+    // (helsdingen-alerts, src/index.js), dus die hoort daar te staan; een
+    // header zou een 403 opleveren en de meldingen stil laten wegvallen.
+    //
+    // vi.fn().mockRejectedValue() houdt zelf een handler op de promise vast
+    // (voor de call-tracking), dus die kan een ontbrekende .catch() niet
+    // blootleggen. Dat dekt de test hieronder, met een echte fetch.
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('network down'))
+
+    __testing.postToAlertHub('https://alerts.example/ingest', 'topsecret', '{"a":1}')
+
+    // Geen spy op spawn: in ESM is een module-export niet te herdefinieren.
+    // De broncode van de functie is hier de betrouwbaarder toets.
+    const bron = String(__testing.postToAlertHub)
+    expect(bron, 'geen subproces, anders staat het geheim weer in de argv').not.toMatch(/spawn|exec/)
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    const [calledUrl] = fetchSpy.mock.calls[0]
+    expect(String(calledUrl)).toContain('key=topsecret')
+  })
+
+  it('een mislukte post naar de alert-hub blijft binnen de afhandeling', async () => {
+    let unhandled: unknown
+    const onUnhandled = (err: unknown) => { unhandled = err }
+    process.once('unhandledRejection', onUnhandled)
+
+    // Poort 1 luistert nooit, dus dit is een gegarandeerde, echte connection
+    // failure (geen mock) die een echte unhandled rejection oplevert als de
+    // .catch() ontbreekt.
+    __testing.postToAlertHub('http://127.0.0.1:1/ingest/alert', 'topsecret', '{"a":1}')
+
+    await new Promise(resolve => setTimeout(resolve, 300))
+    process.removeListener('unhandledRejection', onUnhandled)
+    expect(unhandled).toBeUndefined()
   })
 })

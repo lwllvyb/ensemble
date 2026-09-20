@@ -41,6 +41,10 @@ it('claiming a slice of the work never counts as finishing', () => {
   assert.strictEqual(hasCompletionSignal('Mijn kavel is done, ik wacht op codex'), false)
 })
 
+it('een property met .completed is geen afrondingssignaal', () => {
+  assert.strictEqual(hasCompletionSignal('ik kijk naar promise.completed in de logs'), false)
+})
+
 // It must still recognise a genuine ending, otherwise teams never close.
 it('a real closing statement still counts', () => {
   assert.strictEqual(hasCompletionSignal('Ik ben klaar. Geen openstaande punten meer.'), true)

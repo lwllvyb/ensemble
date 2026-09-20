@@ -35,9 +35,21 @@ export interface MemoryExportResult {
 
 const FALLBACK_PORT = 37777
 
-/** Where a failed export is parked so it is not silently lost. */
+let pendingExportCounter = 0
+
+/**
+ * Where a failed export is parked so it is not silently lost.
+ *
+ * Een vaste naam betekende dat de tweede mislukking de eerste overschreef, en
+ * niets las het bestand ooit terug. Een unieke naam per poging maakt de map
+ * tenminste een eerlijke lijst van wat er niet is aangekomen. Tijdstip + pid
+ * alleen is niet genoeg: twee pogingen binnen dezelfde milliseconde in
+ * hetzelfde proces zouden dan nog steeds botsen, dus daar komt een
+ * proces-lokale teller bij.
+ */
 export function pendingExportFile(runtimeDir: string): string {
-  return path.join(runtimeDir, 'pending-observation.json')
+  pendingExportCounter += 1
+  return path.join(runtimeDir, `pending-observation-${Date.now()}-${process.pid}-${pendingExportCounter}.json`)
 }
 
 /**

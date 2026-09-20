@@ -64,7 +64,9 @@ const COMPLETION_PATTERNS = [
   /(?:^|[^\p{L}\p{N}_])afgerond(?:[^\p{L}\p{N}_]|$)/iu,
   /(?:^|[^\p{L}\p{N}_])\bdone\b(?![.\w])/iu,
   // "completed" but not ".completed" (method/property access) or "completion"
-  /(?<!\.)(?:^|[^\p{L}\p{N}_])completed(?:[^\p{L}\p{N}_]|$)/iu,
+  // De punt hoort in de boundary-groep zelf, anders kijkt de lookbehind naar het
+  // teken vóór de punt en doet de uitzondering niets.
+  /(?:^|[^\p{L}\p{N}_.])completed(?:[^\p{L}\p{N}_]|$)/iu,
   // "klaar" but not "klaar sta", "klaar ben", "klaar om", "klaar voor"
   /(?:^|[^\p{L}\p{N}_])klaar(?!\s+(?:sta|ben|om|voor|zodra))(?:[^\p{L}\p{N}_]|$)/iu,
   /(?:^|\s)tot de volgende(?:\s|$)/i,
@@ -351,6 +353,22 @@ function formatDuration(durationMs: number): string {
     : `${durationMin}m`
 }
 
+/**
+ * Wacht een export af en voert de afhandeling uit. Een fout in die afhandeling
+ * (bijvoorbeeld appendMessage die op een schijffout stuit) blijft hierbinnen:
+ * zonder deze wrapper was `void promise.then(handler)` zonder `.catch()` een
+ * unhandled rejection, en die haalt met de standaardinstelling van Node het
+ * hele proces neer.
+ */
+async function afhandelenExport<T>(exportPromise: Promise<T>, onResult: (result: T) => void): Promise<void> {
+  const result = await exportPromise
+  try {
+    onResult(result)
+  } catch (err) {
+    console.error('[Ensemble] Afhandeling van de memory-export mislukte:', err)
+  }
+}
+
 /** Escape special chars for Telegram MarkdownV2 */
 function escMd(s: string): string {
   return s.replace(/([_[\]()~`>#+\-=|{}.!*\\])/g, '\\$1')
@@ -359,6 +377,41 @@ function escMd(s: string): string {
 /** Escape HTML voor alert-hub body. */
 function escHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+/**
+ * Post naar de alert-hub. Het geheim ging eerder als `?key=` mee in de argv van
+ * een curl-subproces en was daarmee leesbaar in `ps` voor elke andere gebruiker
+ * op de machine. De ingebouwde fetch stuurt het als header, die niet in argv
+ * terechtkomt. Fire-and-forget zoals de oude spawn ook was: alleen een netwerkfout
+ * wordt gelogd, verder wacht niemand hierop.
+ */
+function postToAlertHub(url: string, secret: string, payload: string): void {
+  // Het geheim gaat in de query, want de hub leest het daar en nergens anders
+  // (helsdingen-alerts, src/index.js: url.searchParams.get("key"), anders 403).
+  // Een header lijkt netter maar zou de alerts stil laten wegvallen.
+  //
+  // Het lek zat dan ook niet in de query zelf maar in het curl-subproces dat
+  // deze URL als argv meekreeg, en argv is voor elke andere gebruiker op de
+  // machine leesbaar via ps. Met fetch is er geen subproces en dus geen argv.
+  const doel = new URL(url)
+  doel.searchParams.set('key', secret)
+
+  void fetch(doel, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: payload,
+    signal: AbortSignal.timeout(5000),
+  })
+    .then(res => {
+      // De oude spawn keek nergens naar, dus een afgewezen sleutel was stil.
+      if (!res.ok) {
+        console.error(`[Ensemble] Alert-hub weigerde de melding: HTTP ${res.status}`)
+      }
+    })
+    .catch(err => {
+      console.error('[Ensemble] Failed to post to alert-hub:', err)
+    })
 }
 
 function sendTelegramSummary(params: {
@@ -389,20 +442,7 @@ function sendTelegramSummary(params: {
       body: hubBody,
     })
 
-    const hubCurl = spawn(
-      'curl',
-      [
-        '-sS', '-X', 'POST',
-        `${ALERT_HUB_URL}?key=${encodeURIComponent(ALERT_HUB_SECRET)}`,
-        '-H', 'Content-Type: application/json',
-        '-d', hubPayload,
-      ],
-      { detached: true, stdio: 'ignore' },
-    )
-    hubCurl.on('error', err => {
-      console.error('[Ensemble] Failed to post to alert-hub:', err)
-    })
-    hubCurl.unref()
+    postToAlertHub(ALERT_HUB_URL, ALERT_HUB_SECRET, hubPayload)
     return
   }
 
@@ -1216,28 +1256,31 @@ export async function disbandTeam(teamId: string): Promise<ServiceResult<{ team:
         || (cwdMatch ? cwdMatch[1].split('/').pop() : undefined)
         || 'ensemble'
 
-      void exportObservation(
-        {
-          title: `Collab: ${team.description.slice(0, 80)}`,
-          subtitle: `${agents.join(' + ')} — ${duration}, ${agentMessages.length} messages`,
-          type: 'discovery',
-          narrative: `Team "${team.name}" (${duration}):\nTask: ${team.description.slice(0, 200)}\n\n${summaryParts.join('\n\n')}`,
-          project,
+      void afhandelenExport(
+        exportObservation(
+          {
+            title: `Collab: ${team.description.slice(0, 80)}`,
+            subtitle: `${agents.join(' + ')} — ${duration}, ${agentMessages.length} messages`,
+            type: 'discovery',
+            narrative: `Team "${team.name}" (${duration}):\nTask: ${team.description.slice(0, 200)}\n\n${summaryParts.join('\n\n')}`,
+            project,
+          },
+          collabRuntimeDir(teamId),
+        ),
+        result => {
+          if (result.ok) return
+          // Say it out loud, in both places the user actually looks. A silent
+          // failure here is how this feature stayed dead for weeks.
+          const why = result.error || `HTTP ${result.status}`
+          console.warn(`[Ensemble] Memory export failed (${result.endpoint}): ${why}`)
+          appendMessage(teamId, {
+            id: uuidv4(), teamId, from: 'ensemble', to: 'team',
+            content: `⚠️ Kon deze collab niet naar claude-mem schrijven (${result.endpoint}): ${why}. `
+              + `Payload bewaard in de runtime-map; er is geen automatische nieuwe poging.`,
+            type: 'chat', timestamp: new Date().toISOString(),
+          })
         },
-        collabRuntimeDir(teamId),
-      ).then(result => {
-        if (result.ok) return
-        // Say it out loud, in both places the user actually looks. A silent
-        // failure here is how this feature stayed dead for weeks.
-        const why = result.error || `HTTP ${result.status}`
-        console.warn(`[Ensemble] Memory export failed (${result.endpoint}): ${why}`)
-        appendMessage(teamId, {
-          id: uuidv4(), teamId, from: 'ensemble', to: 'team',
-          content: `⚠️ Kon deze collab niet naar claude-mem schrijven (${result.endpoint}): ${why}. `
-            + `Payload bewaard als pending-observation.json in de runtime-map.`,
-          type: 'chat', timestamp: new Date().toISOString(),
-        })
-      })
+      )
     }
   } catch { /* non-fatal */ }
 
@@ -1254,4 +1297,6 @@ export const __testing = {
   SINGLE_SIGNAL_IDLE_THRESHOLD_MS,
   COMPLETION_PATTERNS,
   CONTINUATION_PATTERNS,
+  afhandelenExport,
+  postToAlertHub,
 }
