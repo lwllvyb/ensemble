@@ -42,22 +42,24 @@ if [ ! -d "$RD/prompts" ]; then
   exit 1
 fi
 
-# Lees teamnaam uit een delivery-file of tmux sessie naam
-TEAMNAME=""
-for s in $(tmux ls 2>/dev/null | grep -oE 'collab-[0-9]+-[0-9]+'); do
-  if tmux has-session -t "${s}-codex-1" 2>/dev/null; then
-    TEAMNAME="$s"
-    break
-  fi
-done
+# De sessies van dit team staan in het register dat de service wegschrijft
+# (services/ensemble-service.ts, vlak voor Phase 2). Hiervoor pakte rescue de
+# eerste tmux-sessie met een codex-1 erin, zonder enige vergelijking met het
+# gevraagde team-id: de prompts van dit team belandden dan in de panes van een
+# willekeurig ander team. En een team zonder codex werd nooit gevonden, terwijl
+# dat nou juist het geval is waarvoor rescue bedoeld is.
+if [ ! -f "$RD/sessions" ]; then
+  echo "FOUT: geen sessieregister voor $TEAM_ID; dit team is niet door deze launcher gestart" >&2
+  exit 1
+fi
 
-if [ -z "$TEAMNAME" ]; then
-  echo "FOUT: geen actieve tmux collab-sessie gevonden voor $TEAM_ID" >&2
+if [ ! -s "$RD/sessions" ]; then
+  echo "FOUT: sessieregister voor $TEAM_ID is leeg" >&2
   exit 1
 fi
 
 echo "team-id: $TEAM_ID"
-echo "tmux base: $TEAMNAME"
+echo "sessies: $(tr '\n' ' ' < "$RD/sessions")"
 echo
 
 CURRENT_COUNT=$(wc -l < "$RD/messages.jsonl" 2>/dev/null | tr -d ' ' || echo 0)
@@ -111,12 +113,36 @@ deliver_to_session() {
 }
 
 echo "=== prompt-injectie ==="
-for prompt_file in "$RD/prompts/"*.txt; do
-  [ -f "$prompt_file" ] || continue
-  AGENT_NAME="$(basename "$prompt_file" .txt)"
-  SESSION="${TEAMNAME}-${AGENT_NAME}"
-  deliver_to_session "$SESSION" "$prompt_file" "$AGENT_NAME"
-done
+# Sessie naar promptbestand: de sessie heet altijd "<teamnaam>-<agentnaam>", en
+# <agentnaam> is precies de bestandsnaam in prompts/ (zonder .txt). Een
+# teamnaam kan zelf koppeltekens of cijfers bevatten, dus een generieke regex
+# op de sessienaam terugrekenen naar de agentnaam is niet betrouwbaar. De
+# bekende agentnamen uit prompts/ vergelijken met het staartje van de
+# sessienaam is dat wel: die naam is nooit dubbelzinnig binnen één team, en dit
+# levert ook meteen de echte agentnaam op in plaats van alleen het stukje na
+# de laatste streep (dat zou de claude-detectie in deliver_to_session hieronder
+# stilletjes hebben uitgeschakeld).
+while IFS= read -r SESSION; do
+  [ -n "$SESSION" ] || continue
+  AGENT_NAME=""
+  PROMPT_FILE=""
+  for candidate in "$RD/prompts/"*.txt; do
+    [ -f "$candidate" ] || continue
+    NAME="$(basename "$candidate" .txt)"
+    case "$SESSION" in
+      *"-${NAME}")
+        AGENT_NAME="$NAME"
+        PROMPT_FILE="$candidate"
+        break
+        ;;
+    esac
+  done
+  if [ -z "$AGENT_NAME" ]; then
+    echo "  $SESSION: geen promptbestand voor deze sessie gevonden, overgeslagen"
+    continue
+  fi
+  deliver_to_session "$SESSION" "$PROMPT_FILE" "$AGENT_NAME"
+done < "$RD/sessions"
 
 echo
 echo "=== verifieer (wacht 10s) ==="
@@ -129,7 +155,9 @@ if [ "$NEW_COUNT" -gt "$CURRENT_COUNT" ]; then
   exit 0
 else
   echo "! Nog geen nieuwe berichten — controleer panes handmatig:"
-  echo "    tmux attach -t ${TEAMNAME}-codex-1"
-  echo "    tmux attach -t ${TEAMNAME}-claude-2"
+  while IFS= read -r SESSION; do
+    [ -n "$SESSION" ] || continue
+    echo "    tmux attach -t $SESSION"
+  done < "$RD/sessions"
   exit 2
 fi
