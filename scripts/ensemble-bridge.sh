@@ -85,91 +85,129 @@ while true; do
     # expansion on the program text. Interpolating them into the source meant a
     # single quote in a path, team id, or ENSEMBLE_URL broke the program or ran
     # as code.
-    NEW_POSTED=$(python3 - "$TEAM_ID" "$API" "$POSTED" "$FILE" <<'PY' 2>&1 1>"$RESULT_FILE"
-import json, sys, time, urllib.error, urllib.parse, urllib.request
+    #
+    # Draait op de achtergrond (en niet meer als een gewone $(...) capture), zodat
+    # bash de TERM hieronder kan doorsturen naar deze python3-pid zodra STOPPEN
+    # gezet is. python3's eigen SIGTERM-handler breekt dan een lopende backoff
+    # meteen af in plaats van dat bash tot dertig seconden moet wachten tot de
+    # foreground-aanroep vanzelf terugkeert. stderr (de diagnostische regels)
+    # erft nu gewoon bash's eigen stderr, dat de launcher al naar het bridge-log
+    # stuurt; er is dus geen aparte capture-en-echo-stap meer nodig.
+    python3 - "$TEAM_ID" "$API" "$POSTED" "$FILE" <<'PY' >"$RESULT_FILE" &
+import json, signal, sys, time, urllib.error, urllib.parse, urllib.request
 from itertools import islice
 
 team_id, api, posted_raw, messages_path = sys.argv[1:5]
 posted = int(posted_raw)
 last_success = posted
 
-with open(messages_path) as f:
-    for i, line in enumerate(islice(f, posted, None), start=posted):
-        line = line.strip()
-        if not line:
-            last_success = i + 1
-            continue
-        try:
-            msg = json.loads(line)
-        except json.JSONDecodeError:
-            print(f'[bridge] skip malformed JSON line {i}: {line[:80]}', file=sys.stderr, flush=True)
-            last_success = i + 1
-            continue
+class Stopped(Exception):
+    """Wordt vanuit de SIGTERM-handler gegooid om een lopende sleep() te onderbreken."""
 
-        if not isinstance(msg, dict):
-            print(f'[bridge] skip non-object line {i}', file=sys.stderr, flush=True)
-            last_success = i + 1
-            continue
+def _on_term(signum, frame):
+    raise Stopped()
 
-        content = msg.get('content','')
-        if not content:
-            last_success = i + 1
-            continue
+# Bash zet bij een signaal alleen zijn eigen STOPPEN-vlag; dat bereikt dit
+# losse python3-proces niet vanzelf. Bash stuurt daarom een expliciete TERM
+# naar deze pid. Zonder handler laat Python een time.sleep() bij een signaal
+# gewoon doorlopen met de resterende duur (PEP 475); door hier zelf een
+# uitzondering te gooien breekt de sleep meteen af in plaats van pas na de
+# volle backoff van dertig seconden.
+signal.signal(signal.SIGTERM, _on_term)
 
-        data = json.dumps({
-            'from': msg.get('from',''),
-            'to': msg.get('to','team'),
-            'content': content,
-            'id': msg.get('id',''),
-            'timestamp': msg.get('timestamp',''),
-        }).encode()
-
-        req = urllib.request.Request(
-            f'{api}/api/ensemble/teams/{urllib.parse.quote(team_id, safe="")}',
-            data=data,
-            headers={'Content-Type': 'application/json'},
-            method='POST'
-        )
-        success = False
-        for attempt in range(10):
+try:
+    with open(messages_path) as f:
+        for i, line in enumerate(islice(f, posted, None), start=posted):
+            line = line.strip()
+            if not line:
+                last_success = i + 1
+                continue
             try:
-                with urllib.request.urlopen(req, timeout=5):
-                    pass
-                success = True
-                break
-            except urllib.error.HTTPError as e:
-                if 400 <= e.code < 500:
-                    print(f'[bridge] client error {e.code} on line {i}, skipping: {e}', file=sys.stderr, flush=True)
-                    success = True  # skip permanently, don't retry client errors
-                    break
-                delay = min(30.0, 0.5 * (2 ** attempt))
-                print(f'[bridge] server error line {i}, retry {attempt+1}/10 in {delay:.1f}s: {e}', file=sys.stderr, flush=True)
-                if attempt == 9:
-                    break
-                time.sleep(delay)
-            except (urllib.error.URLError, OSError) as e:
-                delay = min(30.0, 0.5 * (2 ** attempt))
-                print(f'[bridge] network error line {i}, retry {attempt+1}/10 in {delay:.1f}s: {e}', file=sys.stderr, flush=True)
-                if attempt == 9:
-                    break
-                time.sleep(delay)
-        if not success:
-            print(f'[bridge] giving up on line {i} after 10 retries', file=sys.stderr, flush=True)
-            break
+                msg = json.loads(line)
+            except json.JSONDecodeError:
+                print(f'[bridge] skip malformed JSON line {i}: {line[:80]}', file=sys.stderr, flush=True)
+                last_success = i + 1
+                continue
 
-        fr = msg.get('from','?')
-        to = msg.get('to','?')
-        c = content[:60]
-        print(f'[bridge] {fr} -> {to}: {c}...', file=sys.stderr, flush=True)
-        last_success = i + 1
+            if not isinstance(msg, dict):
+                print(f'[bridge] skip non-object line {i}', file=sys.stderr, flush=True)
+                last_success = i + 1
+                continue
+
+            content = msg.get('content','')
+            if not content:
+                last_success = i + 1
+                continue
+
+            data = json.dumps({
+                'from': msg.get('from',''),
+                'to': msg.get('to','team'),
+                'content': content,
+                'id': msg.get('id',''),
+                'timestamp': msg.get('timestamp',''),
+            }).encode()
+
+            req = urllib.request.Request(
+                f'{api}/api/ensemble/teams/{urllib.parse.quote(team_id, safe="")}',
+                data=data,
+                headers={'Content-Type': 'application/json'},
+                method='POST'
+            )
+            success = False
+            for attempt in range(10):
+                try:
+                    with urllib.request.urlopen(req, timeout=5):
+                        pass
+                    success = True
+                    break
+                except urllib.error.HTTPError as e:
+                    # 429 en 408 zijn tijdelijk. Die vielen hiervoor onder "client
+                    # error, permanent overslaan", waardoor een bericht bij een
+                    # rate limit of een timeout definitief verdween in plaats van
+                    # dat het opnieuw geprobeerd werd.
+                    if e.code in (408, 429):
+                        delay = min(30.0, 0.5 * (2 ** attempt))
+                        print(f'[bridge] {e.code} on line {i}, retry {attempt+1}/10 in {delay:.1f}s', file=sys.stderr, flush=True)
+                        if attempt == 9:
+                            break
+                        time.sleep(delay)
+                        continue
+                    if 400 <= e.code < 500:
+                        print(f'[bridge] client error {e.code} on line {i}, skipping: {e}', file=sys.stderr, flush=True)
+                        success = True  # skip permanently, don't retry client errors
+                        break
+                    delay = min(30.0, 0.5 * (2 ** attempt))
+                    print(f'[bridge] server error line {i}, retry {attempt+1}/10 in {delay:.1f}s: {e}', file=sys.stderr, flush=True)
+                    if attempt == 9:
+                        break
+                    time.sleep(delay)
+                except (urllib.error.URLError, OSError) as e:
+                    delay = min(30.0, 0.5 * (2 ** attempt))
+                    print(f'[bridge] network error line {i}, retry {attempt+1}/10 in {delay:.1f}s: {e}', file=sys.stderr, flush=True)
+                    if attempt == 9:
+                        break
+                    time.sleep(delay)
+            if not success:
+                print(f'[bridge] giving up on line {i} after 10 retries', file=sys.stderr, flush=True)
+                break
+
+            fr = msg.get('from','?')
+            to = msg.get('to','?')
+            c = content[:60]
+            print(f'[bridge] {fr} -> {to}: {c}...', file=sys.stderr, flush=True)
+            last_success = i + 1
+except Stopped:
+    print(f'[bridge] gestopt op signaal, laatst geplaatste regel: {last_success}', file=sys.stderr, flush=True)
 
 # Output the last successfully posted line number
 print(last_success, flush=True)
 PY
-)
-
-    # Echo captured stderr (diagnostic messages) so they appear in bridge log
-    [ -n "$NEW_POSTED" ] && echo "$NEW_POSTED" >&2
+    PY_PID=$!
+    wait "$PY_PID" 2>/dev/null
+    if [ "$STOPPEN" -eq 1 ]; then
+      kill "$PY_PID" 2>/dev/null || true
+      wait "$PY_PID" 2>/dev/null
+    fi
 
     # Read the last line (the counter) from stdout
     RESULT=$(cat "$RESULT_FILE" 2>/dev/null | tail -1)
