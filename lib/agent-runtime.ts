@@ -250,16 +250,11 @@ export class TmuxRuntime implements AgentRuntime {
 
     let lastErr: unknown
     const attempts = 3
-    for (let attempt = 1; attempt <= attempts; attempt++) {
+    let geplakt = false
+    for (let attempt = 1; attempt <= attempts && !geplakt; attempt++) {
       try {
         await execAsync(cmd, { shell: '/bin/bash' })
-        // Success — give TUI time to process the paste, then send Enter twice
-        // (some TUIs like Gemini CLI need an extra Enter after paste).
-        await new Promise(r => setTimeout(r, 1000))
-        await execAsync(`tmux send-keys -t "${sName}" Enter`)
-        await new Promise(r => setTimeout(r, 300))
-        await execAsync(`tmux send-keys -t "${sName}" Enter`)
-        return
+        geplakt = true
       } catch (err) {
         lastErr = err
         if (attempt < attempts) {
@@ -268,9 +263,26 @@ export class TmuxRuntime implements AgentRuntime {
         }
       }
     }
-    throw lastErr instanceof Error
-      ? lastErr
-      : new Error(`pasteFromFile failed after ${attempts} attempts`)
+    if (!geplakt) {
+      throw lastErr instanceof Error
+        ? lastErr
+        : new Error(`pasteFromFile failed after ${attempts} attempts`)
+    }
+
+    // De Enters apart van de retry-lus hierboven: die lus omvatte ze eerder
+    // ook, waardoor een mislukte Enter de hele prompt opnieuw liet plakken in
+    // dezelfde pane. Give TUI time to process the paste, then send Enter twice
+    // (some TUIs like Gemini CLI need an extra Enter after paste); een
+    // mislukte Enter wordt gelogd maar triggert geen nieuwe paste.
+    await new Promise(r => setTimeout(r, 1000))
+    for (const wacht of [0, 300]) {
+      if (wacht) await new Promise(r => setTimeout(r, wacht))
+      try {
+        await execAsync(`tmux send-keys -t "${sName}" Enter`)
+      } catch (err) {
+        console.error(`[runtime] Enter naar ${sName} mislukte:`, err)
+      }
+    }
   }
 
   async capturePane(name: string, lines: number = 2000): Promise<string> {

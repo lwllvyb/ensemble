@@ -95,6 +95,12 @@ describe('agent config contract', () => {
     assert.ok(availableAgentKeys().includes('claude'), 'should not crash on a missing file')
   })
 
+  it('er is maar één shellEscape in de codebase', () => {
+    const spawner = fs.readFileSync(path.resolve(process.cwd(), 'lib/agent-spawner.ts'), 'utf8')
+    assert.ok(!/function shellEscape/.test(spawner), 'agent-spawner.ts mag geen eigen shellEscape meer hebben')
+    assert.match(spawner, /import \{[^}]*shellEscape[^}]*\} from '\.\/agent-config'/)
+  })
+
   afterAll(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true })
   })
