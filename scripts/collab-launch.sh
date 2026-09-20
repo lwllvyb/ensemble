@@ -34,10 +34,14 @@ AGENTS="${3:-${COLLAB_AGENTS:-}}"
 TEMPLATE="${4:-${COLLAB_TEMPLATE:-}}"
 
 # ─── Auto-fallback to codex-only when claude auth is dead (set by preflight) ───
-# Preflight writes /tmp/collab-agents-override.txt when claude tmux-probe failed.
+# Preflight writes OVERRIDE_FILE when claude tmux-probe failed. Same default
+# path as collab-preflight.sh, overridable via COLLAB_OVERRIDE_FILE zodat een
+# aanroeper die meerdere teams tegelijk start hier eigen isolatie voor kan
+# regelen, in plaats van dit met elke andere launch te delen.
 # Only kicks in if caller didn't specify AGENTS explicitly.
-if [ -z "$AGENTS" ] && [ -f /tmp/collab-agents-override.txt ]; then
-  AGENTS=$(cat /tmp/collab-agents-override.txt 2>/dev/null || echo "")
+OVERRIDE_FILE="${COLLAB_OVERRIDE_FILE:-/tmp/collab-agents-override.txt}"
+if [ -z "$AGENTS" ] && [ -f "$OVERRIDE_FILE" ]; then
+  AGENTS=$(cat "$OVERRIDE_FILE" 2>/dev/null || echo "")
   if [ -n "$AGENTS" ]; then
     echo -e "  \033[93m!\033[0m Auto-fallback aktief: agents=$AGENTS (zie preflight)"
   fi
@@ -61,7 +65,9 @@ if curl -sf "$API/api/v1/health" > /dev/null 2>&1; then
 else
   echo -ne "  ${SPIN} Starting server..."
   cd "$REPO_DIR" && ./node_modules/.bin/tsx server.ts > /tmp/ensemble-server.log 2>&1 &
-  for _ in $(seq 1 8); do sleep 1; curl -sf "$API/api/v1/health" > /dev/null 2>&1 && break; done
+  # Eerst kijken, dan pas slapen, en in kleinere stappen. Andersom kostte een
+  # server die na 100ms klaar was altijd minstens een volle seconde.
+  for _ in $(seq 1 40); do curl -sf "$API/api/v1/health" > /dev/null 2>&1 && break; sleep 0.2; done
   if curl -sf "$API/api/v1/health" > /dev/null 2>&1; then
     echo -e "\r  ${CHECK} Server started       "
   else
@@ -115,15 +121,27 @@ rm -f "$PAYLOAD_FILE"
 
 TEAM_ID=$(echo "$RESULT" | python3 -c "import json,sys; print(json.load(sys.stdin)['team']['id'])")
 RUNTIME_DIR="$(collab_runtime_dir "$TEAM_ID")"
+# De aanroepers (de collab-skill, cleanroom-test.sh) lezen het team-id van de
+# laatste TEAM_ID=-regel uit onze stdout. Bij een vroege exit moet die regel er
+# dus ook staan: zonder team-id kan niemand het herstelpad volgen dat we in de
+# foutmelding aanraden.
+print_team_id_trailer() {
+  echo "TEAM_ID=$TEAM_ID"
+}
+
 MESSAGES_FILE="$(collab_messages_file "$TEAM_ID")"
 BRIDGE_PID_FILE="$(collab_bridge_pid "$TEAM_ID")"
 BRIDGE_LOG_FILE="$(collab_bridge_log "$TEAM_ID")"
+POLLER_PID_FILE="$(collab_poller_pid "$TEAM_ID")"
 FEED_FILE="$(collab_feed_file "$TEAM_ID")"
 TEAM_ID_FILE="$(collab_team_id_file "$TEAM_ID")"
 
 mkdir -p "$RUNTIME_DIR" "$(dirname "$MESSAGES_FILE")" "$(dirname "$FEED_FILE")"
 touch "$MESSAGES_FILE"
 printf '%s\n' "$TEAM_ID" > "$TEAM_ID_FILE"
+# $RUNTIME_DIR/sessions (welke tmux-sessies bij dit team horen) wordt door de
+# service zelf geschreven, in services/ensemble-service.ts vóór Phase 2. Dat is
+# de ene plek waar de sessienaam ontstaat; dit script bouwt 'm niet opnieuw op.
 # Also write to a well-known location so callers can find the latest team ID.
 # NOTE: this file is global and gets overwritten by concurrent launches. Callers
 # that support parallel collabs should read the TEAM_ID=... line from stdout instead.
@@ -135,7 +153,18 @@ fi
 
 # ─── 3. Bridge (writes its own PID file via single-instance guard) ───
 nohup "$SCRIPT_DIR/ensemble-bridge.sh" "$TEAM_ID" "$API" >> "$BRIDGE_LOG_FILE" 2>&1 &
-echo -e "  ${CHECK} Bridge started"
+# Even kijken of hij het overleeft. Hiervoor kwam het vinkje er altijd, ook als
+# de bridge meteen stuksloeg op zijn health check en het team dus nooit een
+# bericht naar de API zou sturen.
+sleep 0.3
+BRIDGE_PID=$(cat "$BRIDGE_PID_FILE" 2>/dev/null || echo "")
+if [ -n "$BRIDGE_PID" ] && kill -0 "$BRIDGE_PID" 2>/dev/null; then
+  echo -e "  ${CHECK} Bridge started ${D}(pid $BRIDGE_PID)${R}"
+else
+  echo -e "  \033[91m✗${R} Bridge stopte direct, zie $BRIDGE_LOG_FILE" >&2
+  print_team_id_trailer
+  exit 4
+fi
 
 # ─── 4. Monitor ───
 # Monitor selection order (override via COLLAB_MONITOR=herdr|tmux|iterm|none):
@@ -179,11 +208,16 @@ if [ "$MONITOR_PREF" = "none" ]; then
 elif [ "$use_herdr" = true ]; then
   HERDR_MODE="${COLLAB_HERDR_MODE:-split}"
   if HERDR_RESULT=$("$SCRIPT_DIR/open-herdr-monitor.sh" "$REPO_DIR" "$TEAM_ID" "$HERDR_MODE" 2>/tmp/ensemble-herdr.err); then
-    echo -e "  ${CHECK} Monitor opened ${D}(herdr ${HERDR_MODE})${R}"
+    # Eerst de pane-id lezen, dan pas het vinkje. Vindt de sed niets, dan komt
+    # er geen herdr-pane-id op schijf en blijft de pane na afloop openstaan
+    # terwijl de gebruiker al een geslaagde start had gezien.
     MONITOR_MODE="herdr"
     HERDR_PANE=$(printf '%s\n' "$HERDR_RESULT" | sed -n 's/.*new_pane_id=\([^ ]*\).*/\1/p' | tail -1)
     if [ -n "$HERDR_PANE" ]; then
       printf '%s\n' "$HERDR_PANE" > "$RUNTIME_DIR/herdr-pane-id"
+      echo -e "  ${CHECK} Monitor opened ${D}(herdr ${HERDR_MODE})${R}"
+    else
+      echo -e "  \033[93m!${R} Monitor gestart maar herdr gaf geen pane-id terug (zie /tmp/collab-herdr-last.log)"
     fi
   else
     echo -e "  ${D}herdr launch failed: $(head -1 /tmp/ensemble-herdr.err 2>/dev/null)${R}"
@@ -232,10 +266,23 @@ fi
 
 # ─── 5. Background poller (writes its own PID file, stops when the team is over) ───
 nohup "$SCRIPT_DIR/collab-poller.sh" "$TEAM_ID" "$API" > /dev/null 2>&1 &
+# Zelfde controle als bij de bridge: zonder deze check kreeg de poller ook een
+# vinkje terwijl hij meteen kon zijn gestopt (bijvoorbeeld omdat $RUNTIME_DIR
+# nog niet bestond op het moment dat hij zijn pid-bestand probeerde te zetten).
+sleep 0.3
+POLLER_PID=$(cat "$POLLER_PID_FILE" 2>/dev/null || echo "")
+if [ -n "$POLLER_PID" ] && kill -0 "$POLLER_PID" 2>/dev/null; then
+  echo -e "  ${CHECK} Poller started ${D}(pid $POLLER_PID)${R}"
+else
+  echo -e "  \033[91m✗${R} Poller stopte direct" >&2
+  print_team_id_trailer
+  exit 4
+fi
 
 # ─── 6. Wait for agents ───
+AGENT_WAIT_SECS=12
 echo -ne "  ${SPIN} Agents spawning..."
-for _ in $(seq 1 12); do
+for _ in $(seq 1 "$AGENT_WAIT_SECS"); do
   sleep 1
   MC=$(wc -l < "$MESSAGES_FILE" 2>/dev/null | tr -d ' ' || echo "0")
   [ "${MC:-0}" -gt "0" ] && break
@@ -273,7 +320,20 @@ names=[a['name'] for a in json.load(sys.stdin)['team']['agents']][:4]
 text='steer ' + ' / '.join(names)
 print(text if len(text) <= 31 else text[:30] + '…')
 " 2>/dev/null || echo "steer agents")
-echo -e "  ${BD}${G}Team is live!${R} ${W}${AGENT_NAMES}${R} are collaborating."
+# "Team is live!" alleen bij bewijs. Hiervoor werd deze melding altijd gedrukt,
+# ook als de wachtlus hierboven net had vastgesteld dat er nul berichten waren:
+# de postcheck meldde daarna "agents may be in deep work", wat een lege pane
+# niet is.
+if team_has_evidence "$RUNTIME_DIR"; then
+  echo -e "  ${BD}${G}Team is live!${R} ${W}${AGENT_NAMES}${R} are collaborating."
+else
+  echo -e "  ${BD}\033[93mTeam gestart, maar nog geen enkel bericht na ${AGENT_WAIT_SECS}s.${R}" >&2
+  echo -e "  Dat is hetzelfde beeld als een prompt die de TUI niet heeft gehaald." >&2
+  echo -e "  Controleer met: tmux attach -t \$(head -1 \"$RUNTIME_DIR/sessions\")" >&2
+  echo -e "  Opnieuw afleveren: scripts/collab-rescue.sh $TEAM_ID" >&2
+  print_team_id_trailer
+  exit 3
+fi
 echo ""
 if [ "$MONITOR_MODE" = "split" ]; then
   echo -e "  ${D}┌─ Monitor (right panel) ───────────────┐${R}"

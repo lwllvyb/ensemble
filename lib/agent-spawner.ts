@@ -9,7 +9,7 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import { getRuntime } from './agent-runtime'
 import { getSelfHostId } from './hosts-config'
-import { buildAgentCommandParts } from './agent-config'
+import { buildAgentCommandParts, shellEscape } from './agent-config'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(__dirname, '..')
@@ -33,10 +33,6 @@ interface SpawnAgentOptions {
 /** Compute tmux session name from agent name */
 function computeSessionName(agentName: string): string {
   return agentName.replace(/[^a-zA-Z0-9\-_.]/g, '')
-}
-
-function shellEscape(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`
 }
 
 /** Resolve program name to CLI command, adding runtime flags for cwd handling */
@@ -85,7 +81,9 @@ export async function spawnLocalAgent(options: SpawnAgentOptions): Promise<Spawn
   const envForward = Object.entries(process.env)
     .filter(([k]) => k.startsWith('ENSEMBLE_') || k.startsWith('NVIDIA_') || k.startsWith('OPENAI_') || k.startsWith('ANTHROPIC_'))
     .filter(([, v]) => v)
-    .map(([k, v]) => `export ${k}="${v}"`)
+    // Ongeescaped ging de waarde als kale toetsaanslagen de pane in: API-sleutels
+    // stonden zo letterlijk in de tmux-scrollback van elke agent.
+    .map(([k, v]) => `export ${k}=${shellEscape(v as string)}`)
     .join('; ')
   const envPrefix = envForward ? `${envForward}; ` : ''
 

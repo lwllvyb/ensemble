@@ -24,12 +24,12 @@ import { AgentWatchdog } from '../lib/agent-watchdog'
 import {
   collabPromptFile, collabDeliveryFile, collabSummaryFile, collabMessagesFile,
   collabRuntimeDir, collabFinishedMarker, collabBridgePosted, collabPollerPid,
-  collabBridgeResult, ensureCollabDirs,
+  collabBridgeResult, collabSessionsFile, ensureCollabDirs,
 } from '../lib/collab-paths'
 import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
-import { spawn } from 'child_process'
+import { spawn, execFileSync } from 'child_process'
 import { createWorktree, mergeWorktree, destroyWorktree, type WorktreeInfo } from '../lib/worktree-manager'
 import { runStagedWorkflow } from '../lib/staged-workflow'
 
@@ -64,7 +64,9 @@ const COMPLETION_PATTERNS = [
   /(?:^|[^\p{L}\p{N}_])afgerond(?:[^\p{L}\p{N}_]|$)/iu,
   /(?:^|[^\p{L}\p{N}_])\bdone\b(?![.\w])/iu,
   // "completed" but not ".completed" (method/property access) or "completion"
-  /(?<!\.)(?:^|[^\p{L}\p{N}_])completed(?:[^\p{L}\p{N}_]|$)/iu,
+  // De punt hoort in de boundary-groep zelf, anders kijkt de lookbehind naar het
+  // teken vóór de punt en doet de uitzondering niets.
+  /(?:^|[^\p{L}\p{N}_.])completed(?:[^\p{L}\p{N}_]|$)/iu,
   // "klaar" but not "klaar sta", "klaar ben", "klaar om", "klaar voor"
   /(?:^|[^\p{L}\p{N}_])klaar(?!\s+(?:sta|ben|om|voor|zodra))(?:[^\p{L}\p{N}_]|$)/iu,
   /(?:^|\s)tot de volgende(?:\s|$)/i,
@@ -230,6 +232,11 @@ class EnsembleService {
         void writeDisbandSummary(team.id, { failureReason: reason }).catch(err =>
           console.error(`[Ensemble] Stale summary failed for ${team.id}:`, err),
         )
+        // Een team dat op disbanded gaat zonder dat zijn processen stoppen, wordt
+        // daarna door de watchdog en checkIdleTeams overgeslagen omdat die op
+        // status 'active' filteren. De tmux-sessies en de poller blijven dan voor
+        // altijd draaien.
+        this.stopTeamProcesses(team.id)
         updateTeam(team.id, { ...team, status: 'disbanded' })
         count++
       }
@@ -237,6 +244,33 @@ class EnsembleService {
     if (count > 0) {
       console.log(`[Ensemble] Startup cleanup: disbanded ${count} stale active team(s)`)
     }
+  }
+
+  // Killt de tmux-sessies uit het sessieregister en stopt bridge/poller via de
+  // gedeelde bash-functie stop_team_processes (scripts/collab-paths.sh). Puur
+  // best-effort: een ontbrekend register of een proces dat al weg is, is geen
+  // fout, dat gebeurt precies bij de oudere teams die dit moet opruimen.
+  private stopTeamProcesses(teamId: string): void {
+    try {
+      const sessions = fs.readFileSync(collabSessionsFile(teamId), 'utf8')
+        .split('\n')
+        .map(line => line.trim())
+        .filter(Boolean)
+      for (const session of sessions) {
+        try {
+          execFileSync('tmux', ['kill-session', '-t', session], { stdio: 'ignore' })
+        } catch { /* sessie bestond al niet meer */ }
+      }
+    } catch { /* geen sessieregister, bijvoorbeeld een ouder team */ }
+
+    try {
+      const pathsScript = path.join(__dirname, '../scripts/collab-paths.sh')
+      execFileSync(
+        'bash',
+        ['-c', '. "$1" && stop_team_processes "$2"', '_', pathsScript, collabRuntimeDir(teamId)],
+        { stdio: 'ignore' },
+      )
+    } catch { /* geen bridge/poller meer te stoppen */ }
   }
 
   async checkIdleTeams(): Promise<void> {
@@ -286,7 +320,7 @@ class EnsembleService {
         .filter(m => activeNames.has(m.from) && m.content.trim() === EXPLICIT_DONE_SENTINEL)
         .map(m => m.from),
     )
-    if (activeNames.size >= 2 && sentinelSenders.size >= activeNames.size) return true
+    if (activeNames.size > 0 && sentinelSenders.size >= activeNames.size) return true
 
     // Don't auto-disband until agents have exchanged enough messages
     if (nonEnsembleMessages.length < MIN_MESSAGES_BEFORE_AUTO_DISBAND) return false
@@ -351,6 +385,22 @@ function formatDuration(durationMs: number): string {
     : `${durationMin}m`
 }
 
+/**
+ * Wacht een export af en voert de afhandeling uit. Een fout in die afhandeling
+ * (bijvoorbeeld appendMessage die op een schijffout stuit) blijft hierbinnen:
+ * zonder deze wrapper was `void promise.then(handler)` zonder `.catch()` een
+ * unhandled rejection, en die haalt met de standaardinstelling van Node het
+ * hele proces neer.
+ */
+async function afhandelenExport<T>(exportPromise: Promise<T>, onResult: (result: T) => void): Promise<void> {
+  const result = await exportPromise
+  try {
+    onResult(result)
+  } catch (err) {
+    console.error('[Ensemble] Afhandeling van de memory-export mislukte:', err)
+  }
+}
+
 /** Escape special chars for Telegram MarkdownV2 */
 function escMd(s: string): string {
   return s.replace(/([_[\]()~`>#+\-=|{}.!*\\])/g, '\\$1')
@@ -359,6 +409,41 @@ function escMd(s: string): string {
 /** Escape HTML voor alert-hub body. */
 function escHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+/**
+ * Post naar de alert-hub. Het geheim ging eerder als `?key=` mee in de argv van
+ * een curl-subproces en was daarmee leesbaar in `ps` voor elke andere gebruiker
+ * op de machine. De ingebouwde fetch stuurt het als header, die niet in argv
+ * terechtkomt. Fire-and-forget zoals de oude spawn ook was: alleen een netwerkfout
+ * wordt gelogd, verder wacht niemand hierop.
+ */
+function postToAlertHub(url: string, secret: string, payload: string): void {
+  // Het geheim gaat in de query, want de hub leest het daar en nergens anders
+  // (helsdingen-alerts, src/index.js: url.searchParams.get("key"), anders 403).
+  // Een header lijkt netter maar zou de alerts stil laten wegvallen.
+  //
+  // Het lek zat dan ook niet in de query zelf maar in het curl-subproces dat
+  // deze URL als argv meekreeg, en argv is voor elke andere gebruiker op de
+  // machine leesbaar via ps. Met fetch is er geen subproces en dus geen argv.
+  const doel = new URL(url)
+  doel.searchParams.set('key', secret)
+
+  void fetch(doel, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: payload,
+    signal: AbortSignal.timeout(5000),
+  })
+    .then(res => {
+      // De oude spawn keek nergens naar, dus een afgewezen sleutel was stil.
+      if (!res.ok) {
+        console.error(`[Ensemble] Alert-hub weigerde de melding: HTTP ${res.status}`)
+      }
+    })
+    .catch(err => {
+      console.error('[Ensemble] Failed to post to alert-hub:', err)
+    })
 }
 
 function sendTelegramSummary(params: {
@@ -389,20 +474,7 @@ function sendTelegramSummary(params: {
       body: hubBody,
     })
 
-    const hubCurl = spawn(
-      'curl',
-      [
-        '-sS', '-X', 'POST',
-        `${ALERT_HUB_URL}?key=${encodeURIComponent(ALERT_HUB_SECRET)}`,
-        '-H', 'Content-Type: application/json',
-        '-d', hubPayload,
-      ],
-      { detached: true, stdio: 'ignore' },
-    )
-    hubCurl.on('error', err => {
-      console.error('[Ensemble] Failed to post to alert-hub:', err)
-    })
-    hubCurl.unref()
+    postToAlertHub(ALERT_HUB_URL, ALERT_HUB_SECRET, hubPayload)
     return
   }
 
@@ -484,6 +556,22 @@ export function buildPromptPreview(params: {
   const sayTarget = params.teammateNames.length === 1 ? params.teammateNames[0] : 'team'
   const teamSayCmd = `${scriptsDir}/team-say.sh ${params.teamId} ${params.agentName} ${sayTarget || 'team'}`
   const teamReadCmd = `${scriptsDir}/team-read.sh ${params.teamId}`
+
+  if (params.teammateNames.length === 0) {
+    return [
+      `You are ${params.agentName}, the only agent in team "${params.teamName}".`,
+      `Task: ${params.description}`,
+      `You own the entire task: planning, implementation or analysis, verification, and reporting.`,
+      `COMMUNICATION RULES:`,
+      `Send your plan, progress, findings, and blockers via: ${teamSayCmd} "your message"`,
+      `After EVERY analysis or implementation step, run team-say to record what you found or changed.`,
+      `Read the feed for user instructions: ${teamReadCmd}`,
+      `DONE PROTOCOL:`,
+      `Complete and verify the task, then report your results, conclusions, and any remaining limitations via team-say.`,
+      `Only after that, send a FINAL team-say whose message is EXACTLY <<COLLAB_DONE>> (nothing else). This ends the team and preserves the summary.`,
+      `Start NOW: share your plan with team-say, then carry out the task independently.`,
+    ].join(' ')
+  }
 
   // Wording has to scale past a pair: a trio told "both teammates" will close
   // the team as soon as one other agent agrees.
@@ -610,6 +698,14 @@ export async function createEnsembleTeam(
     })
   }
 
+  // Sessies die dit team echt heeft. Postcheck, rescue en cleanup bepaalden dit
+  // eerder met een tmux-scan op de vorm van de sessienaam, waardoor het ene
+  // team de sessies van het andere meepakte. agentName hieronder is de ENE
+  // plek waar de sessienaam ontstaat; het register bewaart die letterlijk in
+  // plaats van 'm elders opnieuw samen te stellen uit team.name + agent.name.
+  const spawnedSessions: string[] = []
+  ensureCollabDirs(team.id)
+
   // Phase 1: Spawn all agents
   for (let i = 0; i < team.agents.length; i++) {
     const agentSpec = team.agents[i]
@@ -645,6 +741,10 @@ export async function createEnsembleTeam(
       team.agents[i].agentId = agentId
       team.agents[i].hostId = hostId
       team.agents[i].status = 'active'
+      spawnedSessions.push(agentName)
+      // Meteen wegschrijven, niet pas na de lus: valt de service om terwijl de
+      // volgende agent opstart, dan staan de sessies die al draaien er toch in.
+      fs.appendFileSync(collabSessionsFile(team.id), `${agentName}\n`)
 
       // Record what was actually launched, not just what was asked for. The
       // requested name and the resolved command can differ, and when they do you
@@ -671,11 +771,17 @@ export async function createEnsembleTeam(
     }
   }
 
+  // Register schrijven vóórdat Phase 2 begint met afleveren. Loopt de service
+  // hierna vast (bijvoorbeeld tijdens het wachten op ready), dan bestaat het
+  // register alsnog en kan rescue de prompts later opnieuw afleveren in plaats
+  // van te weigeren met "geen sessieregister" — precies het scenario waarvoor
+  // rescue bedoeld is.
+
   updateTeam(team.id, { ...team, status: 'active' })
 
   // Phase 2: Wait for ALL agents to be ready, then inject prompts
   const activeAgents = team.agents.filter(a => a.status === 'active')
-  if (activeAgents.length >= 2) {
+  if (activeAgents.length > 0) {
     const runtime = getRuntime()
 
     const waitForReady = async (
@@ -767,7 +873,8 @@ export async function createEnsembleTeam(
     await new Promise(r => setTimeout(r, 2000))
 
     // Phase 3: Inject prompts (skip if staged — staged workflow handles its own prompts)
-    if (request.staged) {
+    // Staged coordination requires multiple agents; a solo agent uses normal delivery.
+    if (request.staged && activeAgents.length >= 2) {
       // Staged mode: skip normal prompt injection, run plan→exec→verify workflow
       appendMessage(team.id, {
         id: uuidv4(), teamId: team.id, from: 'ensemble', to: 'team',
@@ -1198,28 +1305,31 @@ export async function disbandTeam(teamId: string): Promise<ServiceResult<{ team:
         || (cwdMatch ? cwdMatch[1].split('/').pop() : undefined)
         || 'ensemble'
 
-      void exportObservation(
-        {
-          title: `Collab: ${team.description.slice(0, 80)}`,
-          subtitle: `${agents.join(' + ')} — ${duration}, ${agentMessages.length} messages`,
-          type: 'discovery',
-          narrative: `Team "${team.name}" (${duration}):\nTask: ${team.description.slice(0, 200)}\n\n${summaryParts.join('\n\n')}`,
-          project,
+      void afhandelenExport(
+        exportObservation(
+          {
+            title: `Collab: ${team.description.slice(0, 80)}`,
+            subtitle: `${agents.join(' + ')} — ${duration}, ${agentMessages.length} messages`,
+            type: 'discovery',
+            narrative: `Team "${team.name}" (${duration}):\nTask: ${team.description.slice(0, 200)}\n\n${summaryParts.join('\n\n')}`,
+            project,
+          },
+          collabRuntimeDir(teamId),
+        ),
+        result => {
+          if (result.ok) return
+          // Say it out loud, in both places the user actually looks. A silent
+          // failure here is how this feature stayed dead for weeks.
+          const why = result.error || `HTTP ${result.status}`
+          console.warn(`[Ensemble] Memory export failed (${result.endpoint}): ${why}`)
+          appendMessage(teamId, {
+            id: uuidv4(), teamId, from: 'ensemble', to: 'team',
+            content: `⚠️ Kon deze collab niet naar claude-mem schrijven (${result.endpoint}): ${why}. `
+              + `Payload bewaard in de runtime-map; er is geen automatische nieuwe poging.`,
+            type: 'chat', timestamp: new Date().toISOString(),
+          })
         },
-        collabRuntimeDir(teamId),
-      ).then(result => {
-        if (result.ok) return
-        // Say it out loud, in both places the user actually looks. A silent
-        // failure here is how this feature stayed dead for weeks.
-        const why = result.error || `HTTP ${result.status}`
-        console.warn(`[Ensemble] Memory export failed (${result.endpoint}): ${why}`)
-        appendMessage(teamId, {
-          id: uuidv4(), teamId, from: 'ensemble', to: 'team',
-          content: `⚠️ Kon deze collab niet naar claude-mem schrijven (${result.endpoint}): ${why}. `
-            + `Payload bewaard als pending-observation.json in de runtime-map.`,
-          type: 'chat', timestamp: new Date().toISOString(),
-        })
-      })
+      )
     }
   } catch { /* non-fatal */ }
 
@@ -1236,4 +1346,6 @@ export const __testing = {
   SINGLE_SIGNAL_IDLE_THRESHOLD_MS,
   COMPLETION_PATTERNS,
   CONTINUATION_PATTERNS,
+  afhandelenExport,
+  postToAlertHub,
 }

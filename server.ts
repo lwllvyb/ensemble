@@ -4,6 +4,10 @@
  */
 
 import http from 'http'
+import fs from 'fs'
+import os from 'os'
+// Alias, want de request-handler gebruikt de naam `path` al voor de URL-pathname.
+import nodePath from 'path'
 import {
   createEnsembleTeam, getEnsembleTeam, listEnsembleTeams,
   getTeamFeed, sendTeamMessage, disbandTeam,
@@ -124,12 +128,40 @@ const server = http.createServer(async (req, res) => {
   try {
     // Health check — always exempt from rate limiting
     if (path === '/api/v1/health') {
-      return json(res, { status: 'healthy', version: '1.0.0' }, 200, origin)
+      // De preflight herstartte de service ooit puur op leeftijd, als proxy voor
+      // "is hij met credentials gestart". ANTHROPIC_API_KEY en
+      // CLAUDE_CODE_OAUTH_TOKEN staan echter niet eens in de env van de gezonde,
+      // door launchd beheerde service (geverifieerd met `launchctl print`: enkel
+      // PATH, HOME, XPC_SERVICE_NAME), dus die vars zeggen hier niets. claude en
+      // codex bewaren hun login-status wel op schijf onder $HOME, dat de
+      // launchd-plist wel correct doorgeeft. Bestandsaanwezigheid bewijst geen
+      // geldig token (zelfde denkfout als de codex-probe uit #88 zou zijn), maar
+      // is een eerlijker signaal dan een env var die de gezonde instantie nooit
+      // heeft.
+      const home = os.homedir()
+      const hasClaudeCreds = fs.existsSync(nodePath.join(home, '.claude', '.credentials.json'))
+      const hasCodexCreds = fs.existsSync(nodePath.join(home, '.codex', 'auth.json'))
+      // Het veld heet naar wat het meet en niet naar wat je zou willen weten:
+      // of de service bij de opslag kan, niet of het token daarin nog geldig is.
+      // Die laatste vraag beantwoorden de live probes in de preflight.
+      const credentialStore = (hasClaudeCreds || hasCodexCreds) ? 'readable' : 'unreachable'
+      return json(res, {
+        status: 'healthy',
+        version: '1.0.0',
+        credentialStore,
+        uptimeSeconds: Math.round(process.uptime()),
+      }, 200, origin)
     }
 
-    // Internal ensemble API routes are exempt from rate limiting
-    const isInternalEnsembleApi = path.startsWith('/api/ensemble/')
-    if (!isInternalEnsembleApi && isRateLimited(getClientIp(req))) {
+    // Hier stond een uitzondering op '/api/ensemble/', wat elke route is die deze
+    // server heeft: de limiet van 100/min stond daarmee volledig uit. Alleen GET
+    // op een los team en zijn feed blijven vrij, want dat zijn de routes die
+    // pollers echt raken: cli/monitor.ts poll elke 2s allebei (per open monitor),
+    // collab-poller.sh pingt het team-detail-endpoint eens per minuut, en
+    // team-read.sh raakt de feed op het tempo van de agent. De lijst-route
+    // (GET /api/ensemble/teams) en alle mutaties blijven gewoon gelimiteerd.
+    const isTeamPoll = method === 'GET' && /^\/api\/ensemble\/teams\/[^/]+(?:\/feed)?$/.test(path)
+    if (!isTeamPoll && isRateLimited(getClientIp(req))) {
       return json(res, { error: 'Rate limit exceeded' }, 429, origin)
     }
 

@@ -4,6 +4,7 @@ import path from 'path'
 import { execFileSync } from 'child_process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { EnsembleMessage, EnsembleTeam, StagedWorkflowConfig } from '../types/ensemble'
+import { __testing } from '../services/ensemble-service'
 
 const TEAM_SAY_BIN = path.resolve(process.cwd(), 'scripts/team-say.sh')
 const TMP_ENSEMBLE_DIR = '/tmp/ensemble'
@@ -255,6 +256,7 @@ describe('shouldAutoDisband() — tested via checkIdleTeams()', () => {
   })
 
   async function setupServiceWithMocks(team: EnsembleTeam, messages: EnsembleMessage[]) {
+    vi.resetModules()
     const appendedMessages: EnsembleMessage[] = []
     vi.doMock('../lib/ensemble-registry', () => ({
       getMessages: vi.fn(() => messages),
@@ -443,6 +445,18 @@ describe('shouldAutoDisband() — tested via checkIdleTeams()', () => {
     ]
 
     const { mod, appendedMessages } = await setupServiceWithMocks(team, messages)
+    await mod.checkIdleTeams()
+
+    expect(appendedMessages.some(m => m.content.includes('Auto-disband'))).toBe(true)
+  })
+
+  it('auto-disbands a solo agent on its exact sentinel without waiting or filler messages', async () => {
+    const team = makeTeam()
+    team.agents = [team.agents[1]]
+    const { mod, appendedMessages } = await setupServiceWithMocks(team, [
+      makeMessage({ from: 'claude-2', content: '<<COLLAB_DONE>>', timestamp: '2026-03-18T12:04:59.000Z' }),
+    ])
+
     await mod.checkIdleTeams()
 
     expect(appendedMessages.some(m => m.content.includes('Auto-disband'))).toBe(true)
@@ -729,13 +743,12 @@ describe('worktree isolation lifecycle', () => {
       }),
       getSelfHostId: vi.fn(() => 'local'),
     }))
-    vi.doMock('../lib/agent-runtime', () => ({
-      getRuntime: vi.fn(() => ({
-        capturePane: vi.fn(async () => '>'),
-        sendKeys: vi.fn(async () => {}),
-        pasteFromFile: vi.fn(async () => {}),
-      })),
-    }))
+    const runtime = {
+      capturePane: vi.fn(async () => '>'),
+      sendKeys: vi.fn(async () => {}),
+      pasteFromFile: vi.fn(async (_session: string, _file: string) => {}),
+    }
+    vi.doMock('../lib/agent-runtime', () => ({ getRuntime: vi.fn(() => runtime) }))
     vi.doMock('../lib/agent-config', () => ({
       resolveAgentProgram: vi.fn(() => ({ readyMarker: '>', inputMethod: 'sendKeys' })),
       resolveAgentProgramDetailed: vi.fn((program: string) => ({
@@ -755,6 +768,7 @@ describe('worktree isolation lifecycle', () => {
       collabFinishedMarker: vi.fn((teamId: string) => path.join(tempRoot, `${teamId}.finished`)),
       collabBridgePosted: vi.fn((teamId: string) => path.join(tempRoot, `${teamId}.posted`)),
       collabBridgeResult: vi.fn((teamId: string) => path.join(tempRoot, `${teamId}.result`)),
+      collabSessionsFile: vi.fn((teamId: string) => path.join(tempRoot, `${teamId}.sessions`)),
     }))
 
     const mod = await import('../services/ensemble-service')
@@ -763,6 +777,7 @@ describe('worktree isolation lifecycle', () => {
       team,
       appendedMessages,
       mocks: {
+        runtime,
         createTeam,
         getTeam,
         updateTeam,
@@ -777,6 +792,65 @@ describe('worktree isolation lifecycle', () => {
       },
     }
   }
+
+  it.each([false, true])('delivers a solo Claude prompt after readiness (staged=%s)', async (staged) => {
+    vi.useFakeTimers()
+    try {
+      const team = makeTeam({ agents: [makeTeam().agents[1]] })
+      const { mod, mocks } = await setupWorktreeService(team)
+      const config = await import('../lib/agent-config')
+      vi.mocked(config.resolveAgentProgram).mockReturnValue({ readyMarker: '>', inputMethod: 'pasteFromFile' } as ReturnType<typeof config.resolveAgentProgram>)
+      mocks.runtime.capturePane.mockResolvedValueOnce('starting').mockResolvedValue('>')
+      const creation = mod.createEnsembleTeam({
+        name: team.name, description: team.description, agents: [{ program: 'claude' }], staged,
+      })
+      await vi.advanceTimersByTimeAsync(500)
+      expect(mocks.runtime.pasteFromFile).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(5000)
+      expect((await creation).status).toBe(201)
+      expect(mocks.runtime.capturePane).toHaveBeenCalledWith('test-team-claude-2', 50)
+      expect(mocks.runtime.pasteFromFile).toHaveBeenCalledExactlyOnceWith(
+        'test-team-claude-2', path.join(tempRoot, 'team-1-claude-2.prompt.txt'),
+      )
+      const prompt = fs.readFileSync(path.join(tempRoot, 'team-1-claude-2.prompt.txt'), 'utf-8')
+      expect(prompt).toContain('Task: test')
+      expect(prompt).toContain('Start NOW')
+      expect(prompt).toContain('team-say.sh team-1 claude-2 team')
+      expect(prompt).not.toMatch(/teammate|undefined|confirmed agreement|wait for|delegat/i)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('reports solo prompt delivery failures in the feed', async () => {
+    vi.useFakeTimers()
+    try {
+      const team = makeTeam({ agents: [makeTeam().agents[0]] })
+      const { mod, mocks, appendedMessages } = await setupWorktreeService(team)
+      mocks.runtime.sendKeys.mockRejectedValue(new Error('pane unavailable'))
+      const creation = mod.createEnsembleTeam({
+        name: team.name, description: team.description, agents: [{ program: 'codex' }],
+      })
+      await vi.advanceTimersByTimeAsync(5000)
+      await creation
+      expect(appendedMessages.some(m => m.content.includes('Delivery to codex-1 failed: pane unavailable'))).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it.each([undefined, 'implement'])('builds an independent solo prompt (template=%s)', async (templateName) => {
+    const { buildPromptPreview } = await import('../services/ensemble-service')
+    const prompt = buildPromptPreview({
+      teamId: 'solo', teamName: 'solo', description: 'Fix the bug',
+      agentName: 'claude-1', teammateNames: [], agentIndex: 0, templateName,
+    })
+    expect(prompt).toContain('Task: Fix the bug')
+    expect(prompt).toContain('Start NOW')
+    expect(prompt).toContain('team-say.sh solo claude-1 team')
+    expect(prompt).toContain('<<COLLAB_DONE>>')
+    expect(prompt).not.toMatch(/teammate|undefined|confirmed agreement|wait for|delegat/i)
+  })
 
   it('spawns local agents inside their worktree when useWorktrees=true', async () => {
     const team = makeTeam({
@@ -976,6 +1050,7 @@ describe('staged workflow integration', () => {
       collabFinishedMarker: vi.fn((teamId: string) => path.join(tempRoot, `${teamId}.finished`)),
       collabBridgePosted: vi.fn((teamId: string) => path.join(tempRoot, `${teamId}.posted`)),
       collabBridgeResult: vi.fn((teamId: string) => path.join(tempRoot, `${teamId}.result`)),
+      collabSessionsFile: vi.fn((teamId: string) => path.join(tempRoot, `${teamId}.sessions`)),
     }))
     vi.doMock('../lib/worktree-manager', () => ({
       createWorktree: vi.fn(),
@@ -1076,5 +1151,165 @@ describe('CreateTeamRequest staged types', () => {
       agents: [{ program: 'codex' }],
     }
     expect(request.staged).toBeUndefined()
+  })
+})
+
+describe('alert-hub geheim', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('het hub-geheim staat niet in de URL', () => {
+    const src = fs.readFileSync(path.resolve(process.cwd(), 'services/ensemble-service.ts'), 'utf8')
+    expect(src).not.toMatch(/\?key=\$\{encodeURIComponent\(ALERT_HUB_SECRET\)\}/)
+  })
+
+  it('post naar de alert-hub zonder subproces, zodat het geheim niet in de argv staat', () => {
+    // Het lek was niet de query-parameter maar het curl-subproces dat de hele
+    // URL als argv meekreeg: argv is voor elke andere gebruiker op de machine
+    // leesbaar via ps. De hub zelf leest de sleutel uitsluitend uit de query
+    // (helsdingen-alerts, src/index.js), dus die hoort daar te staan; een
+    // header zou een 403 opleveren en de meldingen stil laten wegvallen.
+    //
+    // vi.fn().mockRejectedValue() houdt zelf een handler op de promise vast
+    // (voor de call-tracking), dus die kan een ontbrekende .catch() niet
+    // blootleggen. Dat dekt de test hieronder, met een echte fetch.
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('network down'))
+
+    __testing.postToAlertHub('https://alerts.example/ingest', 'topsecret', '{"a":1}')
+
+    // Geen spy op spawn: in ESM is een module-export niet te herdefinieren.
+    // De broncode van de functie is hier de betrouwbaarder toets.
+    const bron = String(__testing.postToAlertHub)
+    expect(bron, 'geen subproces, anders staat het geheim weer in de argv').not.toMatch(/spawn|exec/)
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    const [calledUrl] = fetchSpy.mock.calls[0]
+    expect(String(calledUrl)).toContain('key=topsecret')
+  })
+
+  it('een mislukte post naar de alert-hub blijft binnen de afhandeling', async () => {
+    let unhandled: unknown
+    const onUnhandled = (err: unknown) => { unhandled = err }
+    process.once('unhandledRejection', onUnhandled)
+
+    // Poort 1 luistert nooit, dus dit is een gegarandeerde, echte connection
+    // failure (geen mock) die een echte unhandled rejection oplevert als de
+    // .catch() ontbreekt.
+    __testing.postToAlertHub('http://127.0.0.1:1/ingest/alert', 'topsecret', '{"a":1}')
+
+    await new Promise(resolve => setTimeout(resolve, 300))
+    process.removeListener('unhandledRejection', onUnhandled)
+    expect(unhandled).toBeUndefined()
+  })
+})
+
+// ─────────────────────────────────────────────────────
+// cleanupStaleTeams() — stopt processen, niet alleen de status
+// ─────────────────────────────────────────────────────
+describe('cleanupStaleTeams stopt achtergebleven processen', () => {
+  let tempRoot: string
+
+  beforeEach(() => {
+    tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ensemble-stale-'))
+    vi.resetModules()
+    vi.restoreAllMocks()
+  })
+
+  afterEach(() => {
+    vi.resetModules()
+    vi.restoreAllMocks()
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  })
+
+  it('kilt de tmux-sessies uit het register en stopt bridge/poller van een stale team', async () => {
+    // Een team ouder dan 2 uur, nog 'active': cleanupStaleTeams() zet dit op
+    // disbanded. Daarna filteren de watchdog en checkIdleTeams op status
+    // 'active' en slaan het voorgoed over, dus als de processen hier niet
+    // stoppen, blijven ze voor altijd draaien.
+    const team = makeTeam({
+      id: 'team-stale-1',
+      status: 'active',
+      createdAt: new Date(Date.now() - 3 * 3600 * 1000).toISOString(),
+    })
+    const runtimeDir = path.join(tempRoot, team.id)
+    fs.mkdirSync(runtimeDir, { recursive: true })
+    fs.writeFileSync(path.join(runtimeDir, 'sessions'), 'collab-1-1-claude-1\ncollab-1-1-codex-2\n')
+
+    const updateTeamMock = vi.fn()
+    const execCalls: string[][] = []
+
+    vi.doMock('../lib/ensemble-registry', () => ({
+      createTeam: vi.fn(),
+      getTeam: vi.fn(() => team),
+      updateTeam: updateTeamMock,
+      loadTeams: vi.fn(() => [team]),
+      appendMessage: vi.fn(),
+      getMessages: vi.fn(() => []),
+    }))
+    vi.doMock('../lib/agent-spawner', () => ({
+      spawnLocalAgent: vi.fn(),
+      killLocalAgent: vi.fn(async () => {}),
+      spawnRemoteAgent: vi.fn(),
+      killRemoteAgent: vi.fn(async () => {}),
+      postRemoteSessionCommand: vi.fn(async () => {}),
+      isRemoteSessionReady: vi.fn(async () => true),
+      getAgentTokenUsage: vi.fn(async () => 'unknown'),
+    }))
+    vi.doMock('../lib/hosts-config', () => ({
+      isSelf: vi.fn(() => true),
+      getHostById: vi.fn(),
+      getSelfHostId: vi.fn(() => 'local'),
+    }))
+    vi.doMock('../lib/agent-runtime', () => ({
+      getRuntime: vi.fn(),
+    }))
+    vi.doMock('../lib/agent-config', () => ({
+      resolveAgentProgram: vi.fn(),
+      resolveAgentProgramDetailed: vi.fn(),
+      availableAgentKeys: vi.fn(() => []),
+    }))
+    vi.doMock('../lib/collab-paths', () => ({
+      ensureCollabDirs: vi.fn(),
+      collabPromptFile: vi.fn(),
+      collabDeliveryFile: vi.fn(),
+      // writeDisbandSummary schrijft hierheen als een stale team geen berichten
+      // had; zonder een echt pad daarvoor gooit fs.mkdirSync op "undefined".
+      collabSummaryFile: vi.fn((teamId: string) => path.join(tempRoot, `${teamId}.summary.txt`)),
+      collabMessagesFile: vi.fn((teamId: string) => path.join(tempRoot, `${teamId}.messages.jsonl`)),
+      collabRuntimeDir: vi.fn((teamId: string) => path.join(tempRoot, teamId)),
+      collabFinishedMarker: vi.fn(),
+      collabBridgePosted: vi.fn(),
+      collabPollerPid: vi.fn(),
+      collabBridgeResult: vi.fn(),
+      collabSessionsFile: vi.fn((teamId: string) => path.join(tempRoot, teamId, 'sessions')),
+    }))
+    vi.doMock('../lib/worktree-manager', () => ({
+      createWorktree: vi.fn(),
+      mergeWorktree: vi.fn(),
+      destroyWorktree: vi.fn(),
+    }))
+    vi.doMock('../lib/staged-workflow', () => ({
+      runStagedWorkflow: vi.fn(),
+    }))
+    vi.doMock('child_process', () => ({
+      spawn: vi.fn(),
+      execFileSync: vi.fn((cmd: string, args: string[]) => {
+        execCalls.push([cmd, ...args])
+        return ''
+      }),
+    }))
+
+    await import('../services/ensemble-service')
+
+    const gekildeSessies = execCalls
+      .filter(c => c[0] === 'tmux' && c[1] === 'kill-session')
+      .map(c => c[3])
+    expect(gekildeSessies).toEqual(['collab-1-1-claude-1', 'collab-1-1-codex-2'])
+
+    const bashAanroep = execCalls.find(c => c[0] === 'bash')
+    expect(bashAanroep, 'stop_team_processes moet via bash aangeroepen worden').toBeDefined()
+    expect(bashAanroep).toContain(runtimeDir)
+
+    expect(updateTeamMock).toHaveBeenCalledWith(team.id, expect.objectContaining({ status: 'disbanded' }))
   })
 })

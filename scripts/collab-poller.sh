@@ -31,7 +31,13 @@ MAX_API_FAILURES="${COLLAB_POLLER_MAX_API_FAILURES:-10}"
 
 [ -d "$RUNTIME_DIR" ] || exit 0
 printf '%s\n' "$$" > "$PID_FILE"
-trap 'rm -f "$PID_FILE"' EXIT INT TERM
+# INT/TERM zetten alleen een vlag: de hoofdlus checkt die na elke sleep en
+# sluit dan zelf af. De vorige "trap ... INT TERM" deed niets aan het stoppen
+# zelf: bash voert de trap-actie uit en gaat gewoon door met de lus, want
+# alleen een expliciete exit beëindigt het proces echt.
+STOPPEN=0
+trap 'rm -f "$PID_FILE"' EXIT
+trap 'STOPPEN=1' INT TERM
 
 flush() {
   local m
@@ -75,5 +81,15 @@ while true; do
       alive) API_FAILURES=0 ;;
     esac
   fi
-  sleep "$POLL_SECS"
+  # Backgrounden en op de eigen pid wachten: bash onderbreekt de wait-builtin
+  # direct zodra het signaal binnenkomt, in plaats van te wachten tot de sleep
+  # zelf afloopt.
+  sleep "$POLL_SECS" &
+  SLEEP_PID=$!
+  wait "$SLEEP_PID" 2>/dev/null
+  if [ "$STOPPEN" -eq 1 ]; then
+    kill "$SLEEP_PID" 2>/dev/null || true
+    echo "[$(basename "$0")] gestopt op signaal" >&2
+    exit 0
+  fi
 done

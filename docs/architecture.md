@@ -128,8 +128,8 @@ Shell process that bridges the gap between file-based agent communication (`team
 
 - Polls `messages.jsonl` for new lines
 - POSTs each message to the ensemble API
-- Exponential backoff on failures
-- Skips client errors (4xx), retries server errors (5xx)
+- Exponential backoff on failures, including 429/408 (rate limit, timeout); other client
+  errors (4xx) are skipped instead of retried
 - Single-instance guard prevents duplicates
 
 ## Data flow
@@ -170,6 +170,7 @@ All runtime data lives in `/tmp/ensemble/<team-id>/`:
 | `poller.pid` | Background poller PID |
 | `feed.txt` | Feed cache |
 | `team-id` | Team ID marker |
+| `sessions` | tmux session names for this team, one per line; written by the service on every successful agent spawn. The one source postcheck, rescue and cleanup use to know which sessions are theirs |
 | `prompts/*.txt` | Per-agent initial prompts |
 | `delivery/*.txt` | Multi-line prompt delivery files |
 | `.poll-seen` | Poll state tracker |

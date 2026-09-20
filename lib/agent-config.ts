@@ -120,7 +120,7 @@ export function resolveAgentProgram(program: string, options: { strict?: boolean
   return resolved.agent
 }
 
-function shellEscape(token: string): string {
+export function shellEscape(token: string): string {
   return /^[a-zA-Z0-9_./:=+-]+$/.test(token)
     ? token
     : `'${token.replace(/'/g, `'\\''`)}'`

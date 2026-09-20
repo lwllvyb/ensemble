@@ -48,6 +48,8 @@ All collab artifacts live in `/tmp/ensemble/<TEAM_ID>/`:
 - `prompts/`, `delivery/` — agent prompt/delivery files
 - `.finished` — written by ensemble-service AFTER summary.txt
 - `team-id` — team ID marker
+- `sessions`: this team's tmux session names, one per line, written by ensemble-service on
+  every successful agent spawn; what postcheck and rescue use to only touch this team's panes
 
 ## Workflow
 
@@ -121,16 +123,25 @@ TEAM_ID=$(printf '%s\n' "$LAUNCH_OUTPUT" | sed -n 's/^TEAM_ID=//p' | tail -1)
 Do not read `/tmp/collab-team-id.txt` unless you have no launch output: it is a single
 global file that a concurrent collab overwrites.
 
+**Check that the launch actually succeeded** before doing Step 2. `collab-launch.sh` can fail
+after the team already exists: exit `3` means a team was created but no message was exchanged
+within the wait window, exit `4` means the bridge or poller died right after starting. Both
+print a `TEAM_ID=` trailer anyway, but neither one printed `Team is live!`. Only tell the user
+the team is live when that exact line is in the output. On exit `3`, run
+`"$ES/collab-rescue.sh" "$TEAM_ID"` before saying anything is running.
+
 ### Step 1b: Health checks (automatic, do not re-run)
 
 - **Preflight** runs inside `collab-launch.sh` before the team is created. It checks the
   service, agent CLI auth, and DNS. Non-zero exit means launch aborted with the fix command
   printed. Do not paper over it with `COLLAB_SKIP_PREFLIGHT=1` unless the user asks.
   Exit codes: `1` service down, `2` service started in an unauthenticated shell (restart it),
-  `3` claude CLI broken, `4` codex CLI broken, `5` DNS/network.
-- **Postcheck** is armed automatically and fires ~25s after spawn. If an agent is stuck in an
-  error state it kills the team and writes the diagnosis to `/tmp/ensemble/<TEAM_ID>/postcheck.log`.
-  If a team dies within the first minute, read that file before guessing.
+  `3` claude CLI broken, `4` codex CLI broken, `5` DNS/network, `6` grok CLI broken.
+- **Postcheck** is armed automatically and fires ~25s after spawn. It only ever looks at this
+  team's own tmux sessions. If an agent is stuck in an error state, or zero messages were
+  exchanged in its wait window, it kills the team and writes the diagnosis to
+  `/tmp/ensemble/<TEAM_ID>/postcheck.log`. If a team dies within the first minute, read that
+  file before guessing.
 
 ### Step 2: Tell the user where the monitor is
 

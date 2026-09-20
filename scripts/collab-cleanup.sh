@@ -3,8 +3,17 @@
 # Usage: collab-cleanup.sh [--force]
 #
 # Finished: has a .finished marker (written on disband). The latest 3 and anything
-# under 24h are kept. Abandoned: no marker and never a message (a launch that
-# died before the agents spoke, or a stray lock directory); removed after 24h.
+# under 24h are kept. Abandoned: no marker (a launch that died before the agents
+# spoke, a stray lock directory, or a team that never disbanded); removed after
+# 24h. Any lingering bridge/poller process is stopped first, with a KILL if it
+# ignores the TERM, whichever bucket the directory fell in.
+#
+# Let op: een levend proces beschermt de map NIET. Dat is met opzet, want de
+# wezen die dit script moet opruimen hebben juist wel een draaiende bridge: die
+# liep tot 20-09-2026 door na een gewone kill. Een team dat legitiem langer dan
+# 24 uur bezig is en nog geen .finished heeft, wordt dus ook opgeruimd. Daarom
+# is verwijderen nooit de default: zonder --force toont dit script alleen wat
+# het zou doen.
 # COLLAB_RUNTIME_ROOT overrides the root, for tests.
 set -euo pipefail
 
@@ -70,15 +79,17 @@ newest_mtime() {
   printf '%s\n' "$newest"
 }
 
-# Directories without a .finished marker that never held a message. A team that
-# spoke keeps its directory whatever its state: it may still be running, and its
-# messages are what collab-history.py reads later.
+# Directories without a .finished marker, whether they ever held a message or
+# not: precies de 28 mappen die eerder voor altijd bleven staan, want een map
+# mét berichten telde nooit als verlaten, ook niet nadat het bridge/poller-
+# proces allang was gestopt. De leeftijdsdrempel verderop beschermt een team
+# dat nog maar net bezig is; stop_team_processes stopt vlak voor het weggooien
+# alsnog elk proces dat toevallig nog leeft.
 abandoned_entries() {
   [ -d "$ENSEMBLE_ROOT" ] || return 0
   find "$ENSEMBLE_ROOT" -mindepth 1 -maxdepth 1 -type d -print0 |
     while IFS= read -r -d '' runtime_dir; do
       [ -f "$runtime_dir/.finished" ] && continue
-      [ -s "$runtime_dir/messages.jsonl" ] && continue
       printf '%s\t%s\n' "$(newest_mtime "$runtime_dir")" "$runtime_dir"
     done | sort -rn
 }
@@ -165,6 +176,7 @@ for idx in ${ENTRIES[@]+"${!ENTRIES[@]}"}; do
 
   ELIGIBLE=$((ELIGIBLE + 1))
   if [ "$MODE" = "force" ]; then
+    stop_team_processes "$runtime_dir"
     if rm -rf "$runtime_dir"; then
       REMOVED=$((REMOVED + 1))
       REMOVED_KB=$((REMOVED_KB + size_kb))
@@ -193,6 +205,7 @@ for entry in ${ABANDONED[@]+"${ABANDONED[@]}"}; do
 
   ABANDONED_ELIGIBLE=$((ABANDONED_ELIGIBLE + 1))
   if [ "$MODE" = "force" ]; then
+    stop_team_processes "$runtime_dir"
     if rm -rf "$runtime_dir"; then
       ABANDONED_REMOVED=$((ABANDONED_REMOVED + 1))
       echo -e "  ${G}remove${R}  ${runtime_name} ${D}(abandoned, never a message, ${age_hours}h old)${R}"

@@ -7,13 +7,17 @@
 # Exit codes:
 #   0 — agents healthy (or messages already exchanged)
 #   1 — team-id not found
-#   2 — agent stuck in error state (kills team, prints diagnosis)
+#   2 — agent stuck in error state (kills team, prints diagnosis), of nul
+#       berichten na de wachttijd (team blijft leven, roep collab-rescue.sh aan)
 
 set -uo pipefail
 
 TEAM_ID="${1:?Usage: collab-postcheck.sh <team-id> [wait-seconds]}"
 WAIT="${2:-30}"
-RD="/tmp/ensemble/$TEAM_ID"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=collab-paths.sh
+. "$SCRIPT_DIR/collab-paths.sh"
+RD="$(collab_runtime_dir "$TEAM_ID")"
 
 R='\033[0m'; RED='\033[91m'; GRN='\033[92m'; YEL='\033[93m'; BD='\033[1m'
 
@@ -22,18 +26,16 @@ if [ ! -d "$RD" ]; then
   exit 1
 fi
 
-# Find this team's tmux sessions (codex-1, claude-2, etc.)
-# Sessions are named: collab-<timestamp>-<random>-<agent>
-# Match by team prefix: scan tmux for any session matching the team-id prefix
-# Actually ensemble names sessions: collab-<TS>-<RAND>-<agent>. Match via /tmp marker.
-# Easier: read team-id file in $RD/team-id (created by collab-launch)
-# Fallback: look up via TEAM_PREFIX env
-
-# The launcher leaves session names matching the timestamp portion of team-name.
-# We grep all collab- sessions whose suffix matches an agent role.
-SESSIONS=$(tmux ls 2>/dev/null | grep -oE "^collab-[0-9]+-[0-9]+-[a-z]+-[0-9]+" | sort -u)
+# Alleen de sessies van dit team. Eerder stond hier een tmux-scan op de vorm van
+# de sessienaam, waardoor een fout in team A alle sessies van team B meenam.
+if [ -f "$RD/sessions" ]; then
+  SESSIONS=$(cat "$RD/sessions")
+else
+  echo -e "${YEL}!${R} Geen sessieregister voor $TEAM_ID (ouder team?), postcheck slaat over"
+  exit 0
+fi
 if [ -z "$SESSIONS" ]; then
-  echo -e "${YEL}!${R} No collab tmux sessions found (already cleaned up?)"
+  echo -e "${YEL}!${R} Sessieregister is leeg, niets te controleren"
   exit 0
 fi
 
@@ -46,10 +48,6 @@ ERROR_LOG=""
 for s in $SESSIONS; do
   PANE_OUT=$(tmux capture-pane -t "$s" -p 2>/dev/null || true)
   if [ -z "$PANE_OUT" ]; then continue; fi
-
-  # Skip sessions that aren't part of this team (other teams may exist)
-  # Compare agent prompt files in $RD/prompts/ to confirm
-  AGENT_NAME="${s##*-collab-*-}"  # imperfect — best effort
 
   # Check for known fatal error patterns
   if echo "$PANE_OUT" | grep -qiE "Not logged in|Please run /login"; then
@@ -88,9 +86,11 @@ if [ "$ERRORS_FOUND" -gt 0 ]; then
 fi
 
 if [ "$MSG_COUNT" -eq 0 ]; then
-  echo -e "${YEL}!${R} No messages after ${WAIT}s — agents may be in deep work, monitor manually"
-else
-  echo -e "${GRN}✓${R} $MSG_COUNT messages exchanged — agents healthy"
+  echo -e "${RED}✗${R} Nul berichten na ${WAIT}s. Dat is geen diep werk maar een team dat niets doet." >&2
+  echo -e "  Opnieuw afleveren: scripts/collab-rescue.sh $TEAM_ID" >&2
+  exit 2
 fi
+
+echo -e "${GRN}✓${R} $MSG_COUNT messages exchanged — agents healthy"
 
 exit 0

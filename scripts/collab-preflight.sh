@@ -22,6 +22,11 @@ set -uo pipefail
 
 API="${ENSEMBLE_URL:-http://localhost:23000}"
 SERVICE_MAX_AGE_HOURS="${COLLAB_SERVICE_MAX_AGE:-24}"
+# Vast pad, gedeeld door elke launch: twee starts binnen een seconde kunnen
+# zo elkaars auto-fallback-aanbeveling lezen. De default blijft hetzelfde
+# (gedocumenteerd gedrag), maar een aanroeper die isolatie wil kan er nu
+# COLLAB_OVERRIDE_FILE overheen zetten.
+OVERRIDE_FILE="${COLLAB_OVERRIDE_FILE:-/tmp/collab-agents-override.txt}"
 
 # ─── Which agents does this run need? ───
 REQUESTED_AGENTS="${1:-${COLLAB_AGENTS:-}}"
@@ -66,12 +71,54 @@ if ! curl -sf "$API/api/v1/health" > /dev/null 2>&1; then
 fi
 ok "Ensemble service responding"
 
-# ─── 2. Service age (stale state catches the 2026-05-08 issue) ───
-# This whole block used to be a no-op on Linux, which is the opposite of harmless: it is the
-# check that catches a service started in a shell without credentials, the cause of several
-# silent all-agents-dead sessions. Two macOS assumptions hid it. `pgrep` is not installed on a
-# minimal image (procps), and `date -j -f` is BSD-only, so on GNU date the substitution came
-# back empty and the age comparison was skipped without a word.
+# ─── 2. Service health (bereikbare credential-opslag, niet leeftijd) ───
+# Leeftijd was een proxy voor de vraag die er echt toe doet: kan deze service
+# bij de credentials van de agents die hij straks spawnt. Een server die
+# dertig uur probleemloos draait hoeft niet herstart, en een server die tien
+# minuten geleden met een verkeerde HOME is gestart (de 2026-05-08 stale-state
+# issue: agents spawnen met kapotte auth) glipte met een leeftijdscheck alleen
+# juist door. Let op wat dit wel en niet meet: het health-endpoint zegt of de
+# opslag leesbaar is, niet of het token daarin nog geldig is. Die tweede vraag
+# beantwoorden de live probes verderop, die claude en codex echt aanroepen.
+# De leeftijdscheck
+# hieronder blijft staan als vangnet voor als die uitvraag niets bruikbaars
+# teruggeeft (server te oud voor deze fix, netwerkhikje, kapotte JSON).
+HEALTH=$(curl -sf "$API/api/v1/health" 2>/dev/null || echo "")
+CREDS=$(printf '%s' "$HEALTH" | python3 -c "import json,sys; print(json.load(sys.stdin).get('credentialStore','onbekend'))" 2>/dev/null || echo "onbekend")
+
+if [ "$CREDS" = "unreachable" ]; then
+  LAUNCHD_LABEL="${ENSEMBLE_LAUNCHD_LABEL:-dev.ensemble.server}"
+  LAUNCHD_TARGET="gui/$(id -u)/$LAUNCHD_LABEL"
+  if command -v launchctl > /dev/null 2>&1 && launchctl print "$LAUNCHD_TARGET" > /dev/null 2>&1; then
+    warn "Service kan niet bij de credential-opslag, herstarten via launchd ($LAUNCHD_LABEL)"
+    launchctl kickstart -k "$LAUNCHD_TARGET"
+    RESTARTED=0
+    for _ in $(seq 1 10); do
+      sleep 1
+      if curl -sf "$API/api/v1/health" > /dev/null 2>&1; then RESTARTED=1; break; fi
+    done
+    if [ "$RESTARTED" = 1 ]; then
+      ok "Ensemble service restarted (fresh process under launchd)"
+    else
+      fail 2 "Ensemble service did not come back within 10s after launchctl kickstart; check /tmp/ensemble-server.log"
+    fi
+  else
+    fail 2 "Service kan niet bij de credential-opslag, en er is geen launchd-target om te herstarten.
+     Fix: pkill -f 'tsx server.ts' && cd ~/Documents/ensemble && nohup ./node_modules/.bin/tsx server.ts > /tmp/ensemble-server.log 2>&1 &
+     Of installeer de launchd-agent (scripts/install-launchd.sh), dan herstart preflight 'm voortaan zelf."
+  fi
+elif [ "$CREDS" = "readable" ]; then
+  UP=$(printf '%s' "$HEALTH" | python3 -c "import json,sys; print(json.load(sys.stdin).get('uptimeSeconds',0))" 2>/dev/null || echo 0)
+  ok "Service gezond (draait $((UP / 3600))h, komt bij de credential-opslag)"
+else
+  warn "Kon de gezondheid van de service niet uitlezen, val terug op de leeftijdscheck"
+  # Onderstaande blok is de oorspronkelijke leeftijdscheck, ongewijzigd, nu
+  # alleen nog bereikt als de health-uitvraag hierboven niets bruikbaars gaf.
+  # This whole block used to be a no-op on Linux, which is the opposite of harmless: it is the
+  # check that catches a service started in a shell without credentials, the cause of several
+  # silent all-agents-dead sessions. Two macOS assumptions hid it. `pgrep` is not installed on a
+  # minimal image (procps), and `date -j -f` is BSD-only, so on GNU date the substitution came
+  # back empty and the age comparison was skipped without a word.
 if command -v pgrep > /dev/null 2>&1; then
   SERVER_PID=$(pgrep -f "tsx server.ts" | head -1)
 else
@@ -123,6 +170,7 @@ if [ -n "$SERVER_PID" ]; then
   fi
 else
   warn "Could not find the server process — stale-service check skipped"
+fi
 fi
 
 # ─── 3. DNS reachability ───
@@ -182,6 +230,15 @@ elif echo "$TMUX_DNS_RESULT" | grep -qE "gaierror|Name or service not known|Unkn
     warn "  Manual fix: detach clients (Ctrl+B d) en re-run /collab"
     fail 5 "TMUX DNS dead and clients attached — cannot auto-fix"
   fi
+  # list-clients telt alleen attached clients, en agent-panes draaien detached.
+  # Zonder deze controle sloopt een nieuwe collab de panes van een team dat
+  # gewoon aan het werk is.
+  COLLAB_SESSIONS=$(tmux ls 2>/dev/null | grep -c '^collab-' || true)
+  if [ "${COLLAB_SESSIONS:-0}" -gt 0 ]; then
+    fail 5 "TMUX DNS is stale, maar er draaien $COLLAB_SESSIONS collab-sessies.
+     Die zouden door een kill-server verdwijnen. Rond die teams eerst af, of draai
+     zelf: tmux kill-server"
+  fi
   tmux kill-server 2>/dev/null
   sleep 0.5
   ok "TMUX server killed; new spawns will inherit fresh resolver"
@@ -219,26 +276,33 @@ fi
 # ─── 4a. Codex quota probe (regression 2026-05-13: 'usage limit hit' isn't ──
 #         caught by `codex login status` — only by an actual exec call). Run a
 #         minimal `codex exec` and look for the limit-message. Costs ~1 token.
-# The probe demands a sentinel back rather than merely checking for error words.
-# Testing "did codex answer" is not the same as "does codex work": an auth mode
-# that rejects the configured model answers with an ordinary HTTP 400, contains
-# no quota wording, and used to be reported as healthy — after which the agent
-# spawned, reported ready, and then sat silent for the whole session.
+# The probe demands a berekend antwoord terug in plaats van alleen te checken
+# op foutwoorden. Testing "did codex answer" is not the same as "does codex
+# work": an auth mode that rejects the configured model answers with an
+# ordinary HTTP 400, contains no quota wording, and used to be reported as
+# healthy, after which the agent spawned, reported ready, and then sat silent
+# for the whole session.
 # (2026-08-11: a ChatGPT-auth account rejecting an API-only model name did
 # exactly this.)
+# De prompt vroeg eerst letterlijk om de sentinel PROBE-OK-7391 terug te typen,
+# en de grep zocht diezelfde string. Codex echoot elke prompt terug onder het
+# kopje 'user', dus die string stond altijd in de uitvoer, ook met een
+# ingetrokken token (401 op alles gaf toch groen licht, gemeten). Nu vraagt de
+# prompt om een som die codex moet uitrekenen, en de grep zoekt de uitkomst,
+# die nergens in de prompttekst voorkomt.
 # stdin MUST be /dev/null (2026-08-14, codex-cli 0.147.0): with an inherited
 # stdin that stays open, `codex exec` treats it as extra prompt input, prints
 # "Reading additional input from stdin..." and blocks until the timeout kills
-# it. The probe then finds no sentinel and disables a perfectly healthy codex.
+# it. The probe then finds no answer and disables a perfectly healthy codex.
 # Only shows up when preflight is called from a caller whose stdin is a live
 # pipe (an agent shell, CI), which is exactly where a false negative hurts.
 CODEX_PROBE_OUT=$(timeout 40 codex exec --dangerously-bypass-approvals-and-sandbox \
-  "Reply with exactly this and nothing else: PROBE-OK-7391" < /dev/null 2>&1)
+  "Antwoord met alleen het resultaat van 7391 plus 1. Geen andere tekst." < /dev/null 2>&1)
 if echo "$CODEX_PROBE_OUT" | grep -qiE "hit your usage limit|usage limit|rate.?limit|quota"; then
   RESET_TIME=$(echo "$CODEX_PROBE_OUT" | grep -oE "try again at[^.]*\." | head -1)
   warn "Codex quota dead: ${RESET_TIME:-(unknown reset time)} — codex disabled this run"
   CODEX_DEAD=1
-elif ! echo "$CODEX_PROBE_OUT" | grep -q "PROBE-OK-7391"; then
+elif ! echo "$CODEX_PROBE_OUT" | grep -q "7392"; then
   # Drop hook/MCP chatter so the real error stays visible.
   CODEX_TAIL=$(echo "$CODEX_PROBE_OUT" | grep -viE '^hook:|rmcp::|^tokens used' | tail -3)
   warn "Codex answered but produced nothing usable — codex disabled this run"
@@ -247,7 +311,7 @@ elif ! echo "$CODEX_PROBE_OUT" | grep -q "PROBE-OK-7391"; then
   warn "  Check: codex login status  +  the model in ~/.codex/config.toml"
   CODEX_DEAD=1
 else
-  ok "Codex works (probe returned its sentinel)"
+  ok "Codex works (probe computed the answer)"
   CODEX_DEAD=0
 fi
 
@@ -429,32 +493,32 @@ if [ "$EXPLICIT_AGENTS" = "1" ]; then
   [ "$CLAUDE_DEAD" = "1" ] && DEAD_LIST="$DEAD_LIST claude"
   [ "$GROK_DEAD" = "1" ] && DEAD_LIST="$DEAD_LIST grok"
   if [ -n "$DEAD_LIST" ]; then
-    rm -f /tmp/collab-agents-override.txt
+    rm -f "$OVERRIDE_FILE"
     fail 3 "Requested agents unavailable:$DEAD_LIST
      You asked for: $REQUESTED_AGENTS
      Fix the agent above, or relaunch naming different agents."
   fi
-  rm -f /tmp/collab-agents-override.txt
+  rm -f "$OVERRIDE_FILE"
   echo -e "  ${GRN}${BD}All preflight checks passed${R}"
   exit 0
 fi
 
 if [ "$CODEX_DEAD" = "1" ] && [ "$CLAUDE_DEAD" = "1" ]; then
-  rm -f /tmp/collab-agents-override.txt
+  rm -f "$OVERRIDE_FILE"
   fail 3 "BEIDE agents zijn dood. /collab kan niet draaien:
      - Codex: usage limit hit (zie waarschuwing hierboven)
      - Claude: not logged in in spawn-context
      Fix: wacht tot codex-quota reset OF run 'claude /login' in een fresh terminal"
 elif [ "$CODEX_DEAD" = "1" ]; then
   warn "Auto-fallback: claude-only (codex quota op)"
-  echo "claude" > /tmp/collab-agents-override.txt
+  echo "claude" > "$OVERRIDE_FILE"
 elif [ "$CLAUDE_DEAD" = "1" ]; then
   # "niet beschikbaar", not "niet ingelogd": claude also counts as dead when the
   # binary is missing entirely, and the old wording sent people to a login screen.
   warn "Auto-fallback: codex-only (claude niet beschikbaar)"
-  echo "codex" > /tmp/collab-agents-override.txt
+  echo "codex" > "$OVERRIDE_FILE"
 else
-  rm -f /tmp/collab-agents-override.txt
+  rm -f "$OVERRIDE_FILE"
 fi
 
 echo -e "  ${GRN}${BD}All preflight checks passed${R}"
