@@ -626,11 +626,10 @@ end tell`
 
   private renderMessages(w: number, maxLines: number): string {
     const lines: string[] = []
-    const agentMessages = this.messages.filter(m => m.from !== 'ensemble' || m.content.includes('❌'))
 
     // Calculate visible range
     const totalRendered: string[] = []
-    for (const msg of agentMessages) {
+    for (const msg of this.messages) {
       totalRendered.push(...this.renderMessage(msg, w))
     }
 
@@ -655,6 +654,21 @@ end tell`
     const time = new Date(msg.timestamp).toLocaleTimeString('en-US', {
       hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
     })
+
+    if (msg.from === 'ensemble') {
+      const content = msg.content.trim()
+      const emphasis = content.includes('❌') || /Watchdog marked .+ as stalled/.test(content)
+        ? `${color.bold}${color.brightRed}`
+        : content.includes('Watchdog')
+          ? `${color.bold}${color.brightYellow}`
+          : /\bagents received their task\b/.test(content)
+            ? `${color.bold}${color.brightGreen}`
+            : color.gray
+
+      // Compact service events stay in feed order alongside agent messages.
+      return this.wrapPlain(`${time} ensemble: ${content}`, Math.max(1, w - 2))
+        .map(line => `  ${emphasis}${line}${color.reset}`)
+    }
 
     // Agent badge
     const badge = `${style.badge}${color.bold} ${msg.from} ${color.reset}`
