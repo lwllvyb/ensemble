@@ -9,10 +9,11 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { execFileSync } from 'child_process'
+import { execFileSync, spawn, type ChildProcess } from 'child_process'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 const CLEANUP = path.resolve(process.cwd(), 'scripts/collab-cleanup.sh')
+const PATHS = path.resolve(process.cwd(), 'scripts/collab-paths.sh')
 const TWO_DAYS_AGO = new Date(Date.now() - 2 * 24 * 3600 * 1000)
 
 function run(root: string, ...args: string[]): string {
@@ -20,6 +21,41 @@ function run(root: string, ...args: string[]): string {
     env: { ...process.env, COLLAB_RUNTIME_ROOT: root },
     encoding: 'utf8',
   })
+}
+
+// stop_team_processes rechtstreeks aanroepen, los van cleanup.sh, zodat de
+// escalatie- en pid-hergebruiktests niet ook nog aan de leeftijds- en
+// eligibility-regels van cleanup hoeven te voldoen.
+function stopTeamProcesses(dir: string): void {
+  execFileSync('bash', ['-c', `. "${PATHS}" && stop_team_processes "$1"`, '_', dir], { encoding: 'utf8' })
+}
+
+function isAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true } catch { return false }
+}
+
+// Wacht op het echte exit-event van het kindproces in plaats van meteen met
+// kill(pid, 0) te checken. Een net gekild proces is heel even nog een zombie
+// in de procestabel (pas weg zodra Node hem reapt via de event loop), dus een
+// controle direct na een synchrone execFileSync-aanroep zag hem soms nog als
+// "levend" terwijl hij al dood was. Dit wacht op het signaal dat Node zelf
+// gebruikt om te weten dat een kind echt weg is.
+function waitDead(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+  return new Promise(resolve => {
+    if (child.exitCode !== null || child.signalCode !== null) { resolve(true); return }
+    const timer = setTimeout(() => resolve(false), timeoutMs)
+    child.once('exit', () => { clearTimeout(timer); resolve(true) })
+  })
+}
+
+// Een geloofwaardig nepproces met de verwachte scriptnaam in zijn commandoregel,
+// zodat stop_team_processes' identiteitscheck (ps -o command=) hem herkent
+// zoals hij een echte ensemble-bridge.sh/collab-poller.sh zou herkennen.
+function spawnFakeProcess(dir: string, scriptName: string, body: string) {
+  const scriptPath = path.join(dir, scriptName)
+  fs.writeFileSync(scriptPath, `#!/bin/sh\n${body}\n`)
+  fs.chmodSync(scriptPath, 0o755)
+  return spawn(scriptPath, [], { detached: true, stdio: 'ignore' })
 }
 
 function makeDir(root: string, name: string, files: Record<string, string>, old: boolean): string {
@@ -70,10 +106,57 @@ describe('collab-cleanup.sh abandoned directories', () => {
     expect(fs.existsSync(dir)).toBe(true)
   })
 
-  it('keeps an old unfinished directory that has messages', () => {
+  it('removes an old unfinished directory with messages once its processes are dead', () => {
+    // Dit was eerder het gedrag "keeps an old unfinished directory that has
+    // messages": precies de reden dat 28 van de 47 runtime-mappen bleven
+    // staan. Zonder .finished en zonder een levend bridge/poller-proces is
+    // zo'n map niet meer "misschien nog bezig", maar gewoon verlaten.
     const dir = makeDir(root, 'long-runner', { 'messages.jsonl': '{"from":"codex-1"}\n' }, true)
     run(root, '--force')
-    expect(fs.existsSync(dir)).toBe(true)
+    expect(fs.existsSync(dir)).toBe(false)
+  })
+
+  it('stopt het bridge- en poller-proces voordat de map verdwijnt', async () => {
+    const dir = makeDir(root, 'team-live', { 'messages.jsonl': '{}\n' }, true)
+    const bridge = spawnFakeProcess(dir, 'ensemble-bridge.sh', 'sleep 30')
+    const poller = spawnFakeProcess(dir, 'collab-poller.sh', 'sleep 30')
+    fs.writeFileSync(path.join(dir, 'bridge.pid'), String(bridge.pid))
+    fs.writeFileSync(path.join(dir, 'poller.pid'), String(poller.pid))
+    // De scripts en pid-bestanden zijn zojuist geschreven en hebben dus een
+    // verse mtime. newest_mtime() telt die mee, waardoor de map anders als
+    // "net gestart" oogt in plaats van als de 2 dagen oude map die de test
+    // simuleert. Opnieuw veroudering toepassen zodat de leeftijdsdrempel van
+    // cleanup deze map ook echt als eligible ziet.
+    ageEverything(dir)
+    run(root, '--force')
+    expect(await waitDead(bridge, 3000), 'bridge moet gestopt zijn').toBe(true)
+    expect(await waitDead(poller, 3000), 'poller moet gestopt zijn').toBe(true)
+  })
+
+  it('escaleert naar KILL als het proces SIGTERM negeert', async () => {
+    const dir = path.join(root, 'team-stubborn')
+    fs.mkdirSync(dir, { recursive: true })
+    const bridge = spawnFakeProcess(dir, 'ensemble-bridge.sh', 'trap "" TERM\nwhile true; do sleep 1; done')
+    fs.writeFileSync(path.join(dir, 'bridge.pid'), String(bridge.pid))
+    stopTeamProcesses(dir)
+    expect(await waitDead(bridge, 3000), 'een proces dat TERM negeert moet alsnog gekilld worden').toBe(true)
+  })
+
+  it('killt geen proces waarvan de pid inmiddels iets anders is', () => {
+    // Een pid-bestand van dagen oud kan naar een heel ander proces wijzen: het
+    // besturingssysteem hergebruikt pids. stop_team_processes controleert de
+    // commandoregel voor het schiet, dus dit proces overleeft.
+    const dir = path.join(root, 'team-reused-pid')
+    fs.mkdirSync(dir, { recursive: true })
+    const unrelated = spawn('sleep', ['30'], { detached: true, stdio: 'ignore' })
+    fs.writeFileSync(path.join(dir, 'bridge.pid'), String(unrelated.pid))
+    try {
+      stopTeamProcesses(dir)
+      expect(isAlive(unrelated.pid!), 'een niet-bridge-proces mag niet gekilld worden').toBe(true)
+      expect(fs.existsSync(path.join(dir, 'bridge.pid'))).toBe(false)
+    } finally {
+      unrelated.kill('SIGKILL')
+    }
   })
 
   it('finishes with stats when there is nothing abandoned (empty array, bash 3.2)', () => {
