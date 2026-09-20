@@ -38,12 +38,14 @@ actually needs (`collab-preflight.sh codex,claude,grok`, or `COLLAB_AGENTS`):
 2. Service age (>24h = likely stale env, fail loud)
 3. DNS resolve api.openai.com + api.anthropic.com
 4. tmux DNS probe: a fresh pane must be able to resolve, because a long-running tmux server
-   caches its own resolver and children start failing while the shell still works
-5. Codex: `codex login status` says "Logged in", **and** a real `codex exec` returns the exact
-   sentinel `PROBE-OK-7391`. Asking only whether codex answers is not the same as asking
-   whether codex works: a model that the current auth mode rejects returns an ordinary error
-   with no quota wording, which used to score healthy right before the agent went silent for
-   the whole session
+   caches its own resolver and children start failing while the shell still works. A stale
+   resolver is auto-fixed with `tmux kill-server`, but only if no `collab-*` tmux session is
+   currently running; killing the server would take a working team down with it
+5. Codex: `codex login status` says "Logged in", **and** a real `codex exec` is asked to compute
+   a sum and answers with the result. Asking only whether codex answers is not the same as
+   asking whether codex works: a model that the current auth mode rejects returns an ordinary
+   error with no quota wording, which used to score healthy right before the agent went silent
+   for the whole session
 6. Grok (when requested): `grok models` reports logged in, and the project-picker hint is set
 7. Claude: `claude auth status` reports `"loggedIn": true`, run **inside a fresh tmux pane**
    with `CLAUDECODE` unset, because that is the context agents actually spawn in. Running it in
@@ -61,9 +63,13 @@ that one is broken, not silently get two.
 
 ### Why the postcheck catches it
 `scripts/collab-postcheck.sh` runs 30s after spawn (background):
-- Captures all agent tmux panes
+- Reads `<runtime-dir>/sessions`, the register the service writes on every successful spawn, so
+  it only ever looks at this team's own panes. Without that register (an older team, or one that
+  never got a single agent spawned) it has nothing to check and exits without touching anything
+- Captures those tmux panes
 - Greps for "Not logged in", "stream disconnected", "401 Unauthorized"
-- If any match: kills team, prints diagnosis + suggested fix
+- If any match, or if zero messages were exchanged in the wait window: kills this team's
+  sessions, prints diagnosis + suggested fix
 
 ## "The monitor never appears"
 
