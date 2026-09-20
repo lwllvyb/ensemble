@@ -240,8 +240,13 @@ describe('disbandTeam() kills the poller', () => {
   })
 
   it('the process in poller.pid is gone after disband', async () => {
-    // Stand-in for the poller: any long-lived process whose pid is in poller.pid.
-    sleeper = spawn('sleep', ['300'], { stdio: 'ignore' })
+    // Stand-in for the poller. It has to carry a matching command line, not just
+    // a matching pid: stop_team_processes checks what the process actually is
+    // before it fires, because a pid file left behind for days can point at some
+    // unrelated process of the same user by then.
+    const fakePoller = path.join(tempRoot, 'collab-poller.sh')
+    fs.writeFileSync(fakePoller, '#!/bin/bash\nsleep 300\n', { mode: 0o755 })
+    sleeper = spawn(fakePoller, [teamId], { stdio: 'ignore' })
     const pid = sleeper.pid!
     fs.writeFileSync(path.join(runtimeDir(teamId), 'poller.pid'), `${pid}\n`)
 
