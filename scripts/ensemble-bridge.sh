@@ -23,7 +23,14 @@ cleanup() {
   rm -f "$PID_FILE"
 }
 
-trap cleanup EXIT INT TERM
+# INT/TERM zetten alleen een vlag: de hoofdlus checkt die na elke wachtstap en
+# sluit dan zelf af. De vorige "trap cleanup ... INT TERM" deed niets aan het
+# stoppen zelf: bash voert de trap-actie uit en gaat gewoon door met de lus,
+# want alleen een expliciete exit beëindigt het proces echt. Daardoor bleef
+# een bridge zonder nieuwe berichten dagenlang draaien op een gewone kill.
+STOPPEN=0
+trap cleanup EXIT
+trap 'STOPPEN=1' INT TERM
 
 if [ -f "$PID_FILE" ]; then
   EXISTING_PID="$(tr -d ' ' < "$PID_FILE" 2>/dev/null || true)"
@@ -171,5 +178,15 @@ PY
     fi
   fi
 
-  sleep 1
+  # Backgrounden en op de eigen pid wachten: bash onderbreekt de wait-builtin
+  # direct zodra het signaal binnenkomt, in plaats van te wachten tot de sleep
+  # zelf afloopt.
+  sleep 1 &
+  SLEEP_PID=$!
+  wait "$SLEEP_PID" 2>/dev/null
+  if [ "$STOPPEN" -eq 1 ]; then
+    kill "$SLEEP_PID" 2>/dev/null || true
+    echo "[bridge] gestopt op signaal" >&2
+    exit 0
+  fi
 done
