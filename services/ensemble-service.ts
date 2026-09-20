@@ -320,7 +320,7 @@ class EnsembleService {
         .filter(m => activeNames.has(m.from) && m.content.trim() === EXPLICIT_DONE_SENTINEL)
         .map(m => m.from),
     )
-    if (activeNames.size >= 2 && sentinelSenders.size >= activeNames.size) return true
+    if (activeNames.size > 0 && sentinelSenders.size >= activeNames.size) return true
 
     // Don't auto-disband until agents have exchanged enough messages
     if (nonEnsembleMessages.length < MIN_MESSAGES_BEFORE_AUTO_DISBAND) return false
@@ -557,6 +557,22 @@ export function buildPromptPreview(params: {
   const teamSayCmd = `${scriptsDir}/team-say.sh ${params.teamId} ${params.agentName} ${sayTarget || 'team'}`
   const teamReadCmd = `${scriptsDir}/team-read.sh ${params.teamId}`
 
+  if (params.teammateNames.length === 0) {
+    return [
+      `You are ${params.agentName}, the only agent in team "${params.teamName}".`,
+      `Task: ${params.description}`,
+      `You own the entire task: planning, implementation or analysis, verification, and reporting.`,
+      `COMMUNICATION RULES:`,
+      `Send your plan, progress, findings, and blockers via: ${teamSayCmd} "your message"`,
+      `After EVERY analysis or implementation step, run team-say to record what you found or changed.`,
+      `Read the feed for user instructions: ${teamReadCmd}`,
+      `DONE PROTOCOL:`,
+      `Complete and verify the task, then report your results, conclusions, and any remaining limitations via team-say.`,
+      `Only after that, send a FINAL team-say whose message is EXACTLY <<COLLAB_DONE>> (nothing else). This ends the team and preserves the summary.`,
+      `Start NOW: share your plan with team-say, then carry out the task independently.`,
+    ].join(' ')
+  }
+
   // Wording has to scale past a pair: a trio told "both teammates" will close
   // the team as soon as one other agent agrees.
   const mateCount = params.teammateNames.length
@@ -765,7 +781,7 @@ export async function createEnsembleTeam(
 
   // Phase 2: Wait for ALL agents to be ready, then inject prompts
   const activeAgents = team.agents.filter(a => a.status === 'active')
-  if (activeAgents.length >= 2) {
+  if (activeAgents.length > 0) {
     const runtime = getRuntime()
 
     const waitForReady = async (
@@ -857,7 +873,8 @@ export async function createEnsembleTeam(
     await new Promise(r => setTimeout(r, 2000))
 
     // Phase 3: Inject prompts (skip if staged — staged workflow handles its own prompts)
-    if (request.staged) {
+    // Staged coordination requires multiple agents; a solo agent uses normal delivery.
+    if (request.staged && activeAgents.length >= 2) {
       // Staged mode: skip normal prompt injection, run plan→exec→verify workflow
       appendMessage(team.id, {
         id: uuidv4(), teamId: team.id, from: 'ensemble', to: 'team',

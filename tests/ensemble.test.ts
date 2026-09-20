@@ -256,6 +256,7 @@ describe('shouldAutoDisband() — tested via checkIdleTeams()', () => {
   })
 
   async function setupServiceWithMocks(team: EnsembleTeam, messages: EnsembleMessage[]) {
+    vi.resetModules()
     const appendedMessages: EnsembleMessage[] = []
     vi.doMock('../lib/ensemble-registry', () => ({
       getMessages: vi.fn(() => messages),
@@ -444,6 +445,18 @@ describe('shouldAutoDisband() — tested via checkIdleTeams()', () => {
     ]
 
     const { mod, appendedMessages } = await setupServiceWithMocks(team, messages)
+    await mod.checkIdleTeams()
+
+    expect(appendedMessages.some(m => m.content.includes('Auto-disband'))).toBe(true)
+  })
+
+  it('auto-disbands a solo agent on its exact sentinel without waiting or filler messages', async () => {
+    const team = makeTeam()
+    team.agents = [team.agents[1]]
+    const { mod, appendedMessages } = await setupServiceWithMocks(team, [
+      makeMessage({ from: 'claude-2', content: '<<COLLAB_DONE>>', timestamp: '2026-03-18T12:04:59.000Z' }),
+    ])
+
     await mod.checkIdleTeams()
 
     expect(appendedMessages.some(m => m.content.includes('Auto-disband'))).toBe(true)
@@ -730,13 +743,12 @@ describe('worktree isolation lifecycle', () => {
       }),
       getSelfHostId: vi.fn(() => 'local'),
     }))
-    vi.doMock('../lib/agent-runtime', () => ({
-      getRuntime: vi.fn(() => ({
-        capturePane: vi.fn(async () => '>'),
-        sendKeys: vi.fn(async () => {}),
-        pasteFromFile: vi.fn(async () => {}),
-      })),
-    }))
+    const runtime = {
+      capturePane: vi.fn(async () => '>'),
+      sendKeys: vi.fn(async () => {}),
+      pasteFromFile: vi.fn(async (_session: string, _file: string) => {}),
+    }
+    vi.doMock('../lib/agent-runtime', () => ({ getRuntime: vi.fn(() => runtime) }))
     vi.doMock('../lib/agent-config', () => ({
       resolveAgentProgram: vi.fn(() => ({ readyMarker: '>', inputMethod: 'sendKeys' })),
       resolveAgentProgramDetailed: vi.fn((program: string) => ({
@@ -765,6 +777,7 @@ describe('worktree isolation lifecycle', () => {
       team,
       appendedMessages,
       mocks: {
+        runtime,
         createTeam,
         getTeam,
         updateTeam,
@@ -779,6 +792,65 @@ describe('worktree isolation lifecycle', () => {
       },
     }
   }
+
+  it.each([false, true])('delivers a solo Claude prompt after readiness (staged=%s)', async (staged) => {
+    vi.useFakeTimers()
+    try {
+      const team = makeTeam({ agents: [makeTeam().agents[1]] })
+      const { mod, mocks } = await setupWorktreeService(team)
+      const config = await import('../lib/agent-config')
+      vi.mocked(config.resolveAgentProgram).mockReturnValue({ readyMarker: '>', inputMethod: 'pasteFromFile' } as ReturnType<typeof config.resolveAgentProgram>)
+      mocks.runtime.capturePane.mockResolvedValueOnce('starting').mockResolvedValue('>')
+      const creation = mod.createEnsembleTeam({
+        name: team.name, description: team.description, agents: [{ program: 'claude' }], staged,
+      })
+      await vi.advanceTimersByTimeAsync(500)
+      expect(mocks.runtime.pasteFromFile).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(5000)
+      expect((await creation).status).toBe(201)
+      expect(mocks.runtime.capturePane).toHaveBeenCalledWith('test-team-claude-2', 50)
+      expect(mocks.runtime.pasteFromFile).toHaveBeenCalledExactlyOnceWith(
+        'test-team-claude-2', path.join(tempRoot, 'team-1-claude-2.prompt.txt'),
+      )
+      const prompt = fs.readFileSync(path.join(tempRoot, 'team-1-claude-2.prompt.txt'), 'utf-8')
+      expect(prompt).toContain('Task: test')
+      expect(prompt).toContain('Start NOW')
+      expect(prompt).toContain('team-say.sh team-1 claude-2 team')
+      expect(prompt).not.toMatch(/teammate|undefined|confirmed agreement|wait for|delegat/i)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('reports solo prompt delivery failures in the feed', async () => {
+    vi.useFakeTimers()
+    try {
+      const team = makeTeam({ agents: [makeTeam().agents[0]] })
+      const { mod, mocks, appendedMessages } = await setupWorktreeService(team)
+      mocks.runtime.sendKeys.mockRejectedValue(new Error('pane unavailable'))
+      const creation = mod.createEnsembleTeam({
+        name: team.name, description: team.description, agents: [{ program: 'codex' }],
+      })
+      await vi.advanceTimersByTimeAsync(5000)
+      await creation
+      expect(appendedMessages.some(m => m.content.includes('Delivery to codex-1 failed: pane unavailable'))).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it.each([undefined, 'implement'])('builds an independent solo prompt (template=%s)', async (templateName) => {
+    const { buildPromptPreview } = await import('../services/ensemble-service')
+    const prompt = buildPromptPreview({
+      teamId: 'solo', teamName: 'solo', description: 'Fix the bug',
+      agentName: 'claude-1', teammateNames: [], agentIndex: 0, templateName,
+    })
+    expect(prompt).toContain('Task: Fix the bug')
+    expect(prompt).toContain('Start NOW')
+    expect(prompt).toContain('team-say.sh solo claude-1 team')
+    expect(prompt).toContain('<<COLLAB_DONE>>')
+    expect(prompt).not.toMatch(/teammate|undefined|confirmed agreement|wait for|delegat/i)
+  })
 
   it('spawns local agents inside their worktree when useWorktrees=true', async () => {
     const team = makeTeam({
