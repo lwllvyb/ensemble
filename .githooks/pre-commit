@@ -33,11 +33,15 @@ while IFS= read -r file; do
 done <<< "$STAGED"
 
 # 2. Session links in the content of any staged file.
-for file in $STAGED; do
+# Regel voor regel, net als de controle hierboven: een gewone for-lus splitst
+# op spaties, waardoor een bestandsnaam met een spatie erin ongezien langs
+# deze scan glipt.
+while IFS= read -r file; do
+  [ -n "$file" ] || continue
   if git show ":$file" 2>/dev/null | grep -qE 'claude\.ai/code/session_[A-Za-z0-9]{10,}'; then
     note "$file contains a claude.ai session link"
   fi
-done
+done <<< "$STAGED"
 
 if [ "$FAILED" -ne 0 ]; then
   cat >&2 <<'MSG'

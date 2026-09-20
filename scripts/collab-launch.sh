@@ -34,10 +34,14 @@ AGENTS="${3:-${COLLAB_AGENTS:-}}"
 TEMPLATE="${4:-${COLLAB_TEMPLATE:-}}"
 
 # ─── Auto-fallback to codex-only when claude auth is dead (set by preflight) ───
-# Preflight writes /tmp/collab-agents-override.txt when claude tmux-probe failed.
+# Preflight writes OVERRIDE_FILE when claude tmux-probe failed. Same default
+# path as collab-preflight.sh, overridable via COLLAB_OVERRIDE_FILE zodat een
+# aanroeper die meerdere teams tegelijk start hier eigen isolatie voor kan
+# regelen, in plaats van dit met elke andere launch te delen.
 # Only kicks in if caller didn't specify AGENTS explicitly.
-if [ -z "$AGENTS" ] && [ -f /tmp/collab-agents-override.txt ]; then
-  AGENTS=$(cat /tmp/collab-agents-override.txt 2>/dev/null || echo "")
+OVERRIDE_FILE="${COLLAB_OVERRIDE_FILE:-/tmp/collab-agents-override.txt}"
+if [ -z "$AGENTS" ] && [ -f "$OVERRIDE_FILE" ]; then
+  AGENTS=$(cat "$OVERRIDE_FILE" 2>/dev/null || echo "")
   if [ -n "$AGENTS" ]; then
     echo -e "  \033[93m!\033[0m Auto-fallback aktief: agents=$AGENTS (zie preflight)"
   fi
@@ -61,7 +65,9 @@ if curl -sf "$API/api/v1/health" > /dev/null 2>&1; then
 else
   echo -ne "  ${SPIN} Starting server..."
   cd "$REPO_DIR" && ./node_modules/.bin/tsx server.ts > /tmp/ensemble-server.log 2>&1 &
-  for _ in $(seq 1 8); do sleep 1; curl -sf "$API/api/v1/health" > /dev/null 2>&1 && break; done
+  # Eerst kijken, dan pas slapen, en in kleinere stappen. Andersom kostte een
+  # server die na 100ms klaar was altijd minstens een volle seconde.
+  for _ in $(seq 1 40); do curl -sf "$API/api/v1/health" > /dev/null 2>&1 && break; sleep 0.2; done
   if curl -sf "$API/api/v1/health" > /dev/null 2>&1; then
     echo -e "\r  ${CHECK} Server started       "
   else
@@ -202,11 +208,16 @@ if [ "$MONITOR_PREF" = "none" ]; then
 elif [ "$use_herdr" = true ]; then
   HERDR_MODE="${COLLAB_HERDR_MODE:-split}"
   if HERDR_RESULT=$("$SCRIPT_DIR/open-herdr-monitor.sh" "$REPO_DIR" "$TEAM_ID" "$HERDR_MODE" 2>/tmp/ensemble-herdr.err); then
-    echo -e "  ${CHECK} Monitor opened ${D}(herdr ${HERDR_MODE})${R}"
+    # Eerst de pane-id lezen, dan pas het vinkje. Vindt de sed niets, dan komt
+    # er geen herdr-pane-id op schijf en blijft de pane na afloop openstaan
+    # terwijl de gebruiker al een geslaagde start had gezien.
     MONITOR_MODE="herdr"
     HERDR_PANE=$(printf '%s\n' "$HERDR_RESULT" | sed -n 's/.*new_pane_id=\([^ ]*\).*/\1/p' | tail -1)
     if [ -n "$HERDR_PANE" ]; then
       printf '%s\n' "$HERDR_PANE" > "$RUNTIME_DIR/herdr-pane-id"
+      echo -e "  ${CHECK} Monitor opened ${D}(herdr ${HERDR_MODE})${R}"
+    else
+      echo -e "  \033[93m!${R} Monitor gestart maar herdr gaf geen pane-id terug (zie /tmp/collab-herdr-last.log)"
     fi
   else
     echo -e "  ${D}herdr launch failed: $(head -1 /tmp/ensemble-herdr.err 2>/dev/null)${R}"

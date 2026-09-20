@@ -22,6 +22,11 @@ set -uo pipefail
 
 API="${ENSEMBLE_URL:-http://localhost:23000}"
 SERVICE_MAX_AGE_HOURS="${COLLAB_SERVICE_MAX_AGE:-24}"
+# Vast pad, gedeeld door elke launch: twee starts binnen een seconde kunnen
+# zo elkaars auto-fallback-aanbeveling lezen. De default blijft hetzelfde
+# (gedocumenteerd gedrag), maar een aanroeper die isolatie wil kan er nu
+# COLLAB_OVERRIDE_FILE overheen zetten.
+OVERRIDE_FILE="${COLLAB_OVERRIDE_FILE:-/tmp/collab-agents-override.txt}"
 
 # ─── Which agents does this run need? ───
 REQUESTED_AGENTS="${1:-${COLLAB_AGENTS:-}}"
@@ -445,32 +450,32 @@ if [ "$EXPLICIT_AGENTS" = "1" ]; then
   [ "$CLAUDE_DEAD" = "1" ] && DEAD_LIST="$DEAD_LIST claude"
   [ "$GROK_DEAD" = "1" ] && DEAD_LIST="$DEAD_LIST grok"
   if [ -n "$DEAD_LIST" ]; then
-    rm -f /tmp/collab-agents-override.txt
+    rm -f "$OVERRIDE_FILE"
     fail 3 "Requested agents unavailable:$DEAD_LIST
      You asked for: $REQUESTED_AGENTS
      Fix the agent above, or relaunch naming different agents."
   fi
-  rm -f /tmp/collab-agents-override.txt
+  rm -f "$OVERRIDE_FILE"
   echo -e "  ${GRN}${BD}All preflight checks passed${R}"
   exit 0
 fi
 
 if [ "$CODEX_DEAD" = "1" ] && [ "$CLAUDE_DEAD" = "1" ]; then
-  rm -f /tmp/collab-agents-override.txt
+  rm -f "$OVERRIDE_FILE"
   fail 3 "BEIDE agents zijn dood. /collab kan niet draaien:
      - Codex: usage limit hit (zie waarschuwing hierboven)
      - Claude: not logged in in spawn-context
      Fix: wacht tot codex-quota reset OF run 'claude /login' in een fresh terminal"
 elif [ "$CODEX_DEAD" = "1" ]; then
   warn "Auto-fallback: claude-only (codex quota op)"
-  echo "claude" > /tmp/collab-agents-override.txt
+  echo "claude" > "$OVERRIDE_FILE"
 elif [ "$CLAUDE_DEAD" = "1" ]; then
   # "niet beschikbaar", not "niet ingelogd": claude also counts as dead when the
   # binary is missing entirely, and the old wording sent people to a login screen.
   warn "Auto-fallback: codex-only (claude niet beschikbaar)"
-  echo "codex" > /tmp/collab-agents-override.txt
+  echo "codex" > "$OVERRIDE_FILE"
 else
-  rm -f /tmp/collab-agents-override.txt
+  rm -f "$OVERRIDE_FILE"
 fi
 
 echo -e "  ${GRN}${BD}All preflight checks passed${R}"
