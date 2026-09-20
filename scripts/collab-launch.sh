@@ -124,6 +124,9 @@ TEAM_ID_FILE="$(collab_team_id_file "$TEAM_ID")"
 mkdir -p "$RUNTIME_DIR" "$(dirname "$MESSAGES_FILE")" "$(dirname "$FEED_FILE")"
 touch "$MESSAGES_FILE"
 printf '%s\n' "$TEAM_ID" > "$TEAM_ID_FILE"
+# $RUNTIME_DIR/sessions (welke tmux-sessies bij dit team horen) wordt door de
+# service zelf geschreven, in services/ensemble-service.ts vóór Phase 2. Dat is
+# de ene plek waar de sessienaam ontstaat; dit script bouwt 'm niet opnieuw op.
 # Also write to a well-known location so callers can find the latest team ID.
 # NOTE: this file is global and gets overwritten by concurrent launches. Callers
 # that support parallel collabs should read the TEAM_ID=... line from stdout instead.

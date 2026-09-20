@@ -755,6 +755,7 @@ describe('worktree isolation lifecycle', () => {
       collabFinishedMarker: vi.fn((teamId: string) => path.join(tempRoot, `${teamId}.finished`)),
       collabBridgePosted: vi.fn((teamId: string) => path.join(tempRoot, `${teamId}.posted`)),
       collabBridgeResult: vi.fn((teamId: string) => path.join(tempRoot, `${teamId}.result`)),
+      collabSessionsFile: vi.fn((teamId: string) => path.join(tempRoot, `${teamId}.sessions`)),
     }))
 
     const mod = await import('../services/ensemble-service')
@@ -976,6 +977,7 @@ describe('staged workflow integration', () => {
       collabFinishedMarker: vi.fn((teamId: string) => path.join(tempRoot, `${teamId}.finished`)),
       collabBridgePosted: vi.fn((teamId: string) => path.join(tempRoot, `${teamId}.posted`)),
       collabBridgeResult: vi.fn((teamId: string) => path.join(tempRoot, `${teamId}.result`)),
+      collabSessionsFile: vi.fn((teamId: string) => path.join(tempRoot, `${teamId}.sessions`)),
     }))
     vi.doMock('../lib/worktree-manager', () => ({
       createWorktree: vi.fn(),

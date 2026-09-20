@@ -69,6 +69,11 @@ export function collabTeamIdFile(teamId: string): string {
   return path.join(RUNTIME_ROOT, teamId, 'team-id')
 }
 
+/** Sessieregister: één tmux/host-sessienaam per regel, de bron voor postcheck, rescue en cleanup */
+export function collabSessionsFile(teamId: string): string {
+  return path.join(RUNTIME_ROOT, teamId, 'sessions')
+}
+
 /** Finished marker (written on disband, signals cleanup) */
 export function collabFinishedMarker(teamId: string): string {
   return path.join(RUNTIME_ROOT, teamId, '.finished')

@@ -24,7 +24,7 @@ import { AgentWatchdog } from '../lib/agent-watchdog'
 import {
   collabPromptFile, collabDeliveryFile, collabSummaryFile, collabMessagesFile,
   collabRuntimeDir, collabFinishedMarker, collabBridgePosted, collabPollerPid,
-  collabBridgeResult, ensureCollabDirs,
+  collabBridgeResult, collabSessionsFile, ensureCollabDirs,
 } from '../lib/collab-paths'
 import fs from 'fs'
 import path from 'path'
@@ -610,6 +610,14 @@ export async function createEnsembleTeam(
     })
   }
 
+  // Sessies die dit team echt heeft. Postcheck, rescue en cleanup bepaalden dit
+  // eerder met een tmux-scan op de vorm van de sessienaam, waardoor het ene
+  // team de sessies van het andere meepakte. agentName hieronder is de ENE
+  // plek waar de sessienaam ontstaat; het register bewaart die letterlijk in
+  // plaats van 'm elders opnieuw samen te stellen uit team.name + agent.name.
+  const spawnedSessions: string[] = []
+  ensureCollabDirs(team.id)
+
   // Phase 1: Spawn all agents
   for (let i = 0; i < team.agents.length; i++) {
     const agentSpec = team.agents[i]
@@ -645,6 +653,10 @@ export async function createEnsembleTeam(
       team.agents[i].agentId = agentId
       team.agents[i].hostId = hostId
       team.agents[i].status = 'active'
+      spawnedSessions.push(agentName)
+      // Meteen wegschrijven, niet pas na de lus: valt de service om terwijl de
+      // volgende agent opstart, dan staan de sessies die al draaien er toch in.
+      fs.appendFileSync(collabSessionsFile(team.id), `${agentName}\n`)
 
       // Record what was actually launched, not just what was asked for. The
       // requested name and the resolved command can differ, and when they do you
@@ -670,6 +682,12 @@ export async function createEnsembleTeam(
       })
     }
   }
+
+  // Register schrijven vóórdat Phase 2 begint met afleveren. Loopt de service
+  // hierna vast (bijvoorbeeld tijdens het wachten op ready), dan bestaat het
+  // register alsnog en kan rescue de prompts later opnieuw afleveren in plaats
+  // van te weigeren met "geen sessieregister" — precies het scenario waarvoor
+  // rescue bedoeld is.
 
   updateTeam(team.id, { ...team, status: 'active' })
 
