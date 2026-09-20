@@ -31,6 +31,10 @@ export interface MemoryExportResult {
   endpoint: string
   status?: number
   error?: string
+  observationId?: number
+  failureKind?: 'permanent' | 'transient'
+  pendingFile?: string
+  parkingError?: string
 }
 
 const FALLBACK_PORT = 37777
@@ -64,21 +68,21 @@ export function resolveMemoryEndpoint(): string {
   try {
     const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8')) as Record<string, unknown>
     const port = Number(settings['CLAUDE_MEM_WORKER_PORT'])
-    if (Number.isInteger(port) && port > 0) return `http://localhost:${port}/api/observations`
+    if (Number.isInteger(port) && port > 0) return `http://localhost:${port}/api/memory/save`
   } catch {
     // No settings file, or unreadable: fall through to the default below.
   }
-  return `http://localhost:${FALLBACK_PORT}/api/observations`
+  return `http://localhost:${FALLBACK_PORT}/api/memory/save`
 }
 
-/** True if something answers at the endpoint. Used to warn early, not to block. */
+/** Connectivity only: a generic CORS OPTIONS response does not prove POST support. */
 export async function checkMemoryEndpoint(timeoutMs = 2000): Promise<MemoryExportResult> {
   const endpoint = resolveMemoryEndpoint()
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
     const res = await fetch(endpoint, { method: 'OPTIONS', signal: controller.signal })
-    return { ok: res.status < 500, endpoint, status: res.status }
+    return { ok: res.ok, endpoint, status: res.status }
   } catch (err) {
     return { ok: false, endpoint, error: err instanceof Error ? err.message : String(err) }
   } finally {
@@ -103,18 +107,45 @@ export async function exportObservation(
     const res = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(observation),
+      body: JSON.stringify({
+        text: `${observation.subtitle}\n\n${observation.narrative}`,
+        title: observation.title,
+        project: observation.project,
+        metadata: { subtitle: observation.subtitle, type: observation.type },
+      }),
       signal: controller.signal,
     })
-    if (res.ok) return { ok: true, endpoint, status: res.status }
+    if (res.ok) {
+      // The worker acknowledges durable storage with success and an observation ID.
+      // HTTP 200 alone may be an unrelated route, proxy page or changed API.
+      const body = await res.json().catch(err => {
+        if (controller.signal.aborted) throw err
+        return null
+      }) as { success?: unknown; id?: unknown } | null
+      if (body?.success === true && typeof body.id === 'number' && Number.isInteger(body.id) && body.id > 0) {
+        return { ok: true, endpoint, status: res.status, observationId: body.id }
+      }
+      const result: MemoryExportResult = {
+        ok: false, endpoint, status: res.status, failureKind: 'permanent',
+        error: 'Worker did not confirm storage with success: true and an observation ID',
+      }
+      park(observation, runtimeDir, result)
+      return result
+    }
 
-    const result: MemoryExportResult = { ok: false, endpoint, status: res.status }
+    const result: MemoryExportResult = {
+      ok: false, endpoint, status: res.status,
+      failureKind: res.status >= 400 && res.status < 500 && ![408, 429].includes(res.status)
+        ? 'permanent' : 'transient',
+    }
     park(observation, runtimeDir, result)
     return result
   } catch (err) {
     const result: MemoryExportResult = {
       ok: false,
       endpoint,
+      failureKind: err instanceof TypeError && (err.cause as { code?: string } | undefined)?.code === 'ERR_INVALID_URL'
+        ? 'permanent' : 'transient',
       error: err instanceof Error ? err.message : String(err),
     }
     park(observation, runtimeDir, result)
@@ -128,11 +159,13 @@ function park(observation: MemoryObservation, runtimeDir: string | undefined, re
   if (!runtimeDir) return
   try {
     fs.mkdirSync(runtimeDir, { recursive: true })
+    const pendingFile = pendingExportFile(runtimeDir)
     fs.writeFileSync(
-      pendingExportFile(runtimeDir),
+      pendingFile,
       JSON.stringify({ observation, attemptedAt: new Date().toISOString(), result }, null, 2),
     )
-  } catch {
-    // Parking is a courtesy; the caller already logs the real failure.
+    result.pendingFile = pendingFile
+  } catch (err) {
+    result.parkingError = err instanceof Error ? err.message : String(err)
   }
 }

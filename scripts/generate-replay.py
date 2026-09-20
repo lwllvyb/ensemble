@@ -88,6 +88,16 @@ def format_content_irc(text):
     return text
 
 
+def service_level(content):
+    if "❌" in content or re.search(r"Watchdog marked .+ as stalled", content):
+        return "red"
+    if "Watchdog" in content:
+        return "yellow"
+    if re.search(r"\bagents received their task\b", content):
+        return "green"
+    return "gray"
+
+
 def generate_html(msgs, team_id, task):
     agents = {}
     first_ts = ""
@@ -131,8 +141,6 @@ def generate_html(msgs, team_id, task):
         sender = m.get("from", "unknown")
         content = m.get("content", "")
         ts = m.get("timestamp", "")
-        if sender == "ensemble":
-            continue
         time_str = ""
         if ts:
             try:
@@ -140,9 +148,13 @@ def generate_html(msgs, team_id, task):
                 time_str = t.strftime("%H:%M")
             except Exception:
                 pass
-        color = get_irc_color(sender)
-        formatted = format_content_irc(content)
-        irc_html += f'<div class="line msg"><span class="time">[{time_str}]</span> <span style="color:{color};font-weight:bold">&lt;{html.escape(sender)}&gt;</span> {formatted}</div>\n'
+        if sender == "ensemble":
+            level = service_level(content)
+            irc_html += f'<div class="line service service-{level}"><span class="time">[{time_str}]</span> <span class="service-sender">ensemble:</span> {format_content_irc(content)}</div>\n'
+        else:
+            color = get_irc_color(sender)
+            formatted = format_content_irc(content)
+            irc_html += f'<div class="line msg"><span class="time">[{time_str}]</span> <span style="color:{color};font-weight:bold">&lt;{html.escape(sender)}&gt;</span> {formatted}</div>\n'
 
     for name in agents:
         color = get_irc_color(name)
@@ -166,9 +178,6 @@ def generate_html(msgs, team_id, task):
         sender = m.get("from", "unknown")
         content = m.get("content", "")
         ts = m.get("timestamp", "")
-        if sender == "ensemble":
-            continue
-        style = get_modern_style(sender)
         time_str = ""
         if ts:
             try:
@@ -176,6 +185,14 @@ def generate_html(msgs, team_id, task):
                 time_str = t.strftime("%H:%M:%S")
             except Exception:
                 pass
+        if sender == "ensemble":
+            level = service_level(content)
+            modern_html += f'''<div class="m-message m-service service-{level}">
+            <div class="m-header"><span class="m-name">ensemble</span><span class="m-time">{time_str}</span></div>
+            <div class="m-body">{format_content_modern(content)}</div>
+        </div>\n'''
+            continue
+        style = get_modern_style(sender)
         formatted = format_content_modern(content)
         modern_html += f'''<div class="m-message" style="--agent-bg:{style['bg']};--agent-text:{style['text']}">
             <div class="m-header"><span class="m-name" style="color:{style['text']}">{style['icon']} {html.escape(sender)}</span><span class="m-time">{time_str}</span></div>
@@ -278,6 +295,11 @@ body.modern .theme-toggle {{
 .line.part {{ color:#930000; }}
 .line.topic {{ color:#000093; }}
 .line.separator {{ color:#c0c0c0; text-align:center; font-size:11px; margin:2px 0; }}
+.service-green {{ color:#008000; font-weight:bold; }}
+.service-yellow {{ color:#996600; font-weight:bold; }}
+.service-red {{ color:#CC0000; font-weight:bold; }}
+.service-gray {{ color:#808080; }}
+.service-sender {{ font-weight:bold; }}
 .irc-nicklist {{
     width:140px; background:white; border-left:2px inset #dfdfdf;
     padding:4px; overflow-y:auto;
@@ -341,6 +363,12 @@ body.modern .theme-toggle {{
     border-radius:12px; padding:1rem 1.25rem; transition:transform 0.1s;
 }}
 .m-message:hover {{ transform:translateX(2px); }}
+.m-service {{ border-left:3px solid currentColor; }}
+body.modern .m-service.service-green {{ color:#4ade80; }}
+body.modern .m-service.service-yellow {{ color:#fbbf24; }}
+body.modern .m-service.service-red {{ color:#f87171; }}
+body.modern .m-service.service-gray {{ color:#94a3b8; }}
+body.modern .m-service .m-body, body.modern .m-service .m-body strong {{ color:inherit; }}
 .m-header {{ display:flex; justify-content:space-between; align-items:center; margin-bottom:0.5rem; }}
 .m-name {{ font-weight:600; font-size:0.875rem; }}
 .m-time {{ font-size:0.75rem; color:#64748b; font-family:'Fira Code',monospace; }}

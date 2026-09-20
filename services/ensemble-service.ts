@@ -19,7 +19,7 @@ import {
 import { isSelf, getHostById, getSelfHostId } from '../lib/hosts-config'
 import { getRuntime } from '../lib/agent-runtime'
 import { resolveAgentProgram, resolveAgentProgramDetailed, availableAgentKeys } from '../lib/agent-config'
-import { exportObservation, checkMemoryEndpoint } from '../lib/memory-export'
+import { exportObservation, checkMemoryEndpoint, type MemoryExportResult } from '../lib/memory-export'
 import { AgentWatchdog } from '../lib/agent-watchdog'
 import {
   collabPromptFile, collabDeliveryFile, collabSummaryFile, collabMessagesFile,
@@ -166,12 +166,11 @@ class EnsembleService {
       onTeamUnreachable: (teamId, reason) => this.endUnreachableTeam(teamId, reason),
     })
 
-    // Say at startup whether collab outcomes can reach claude-mem. Without this
-    // a wrong port stays invisible: every export fails and nothing reports it,
-    // which is how 29 teams in a row wrote nothing without anyone noticing.
+    // Warn early about connectivity, but generic CORS OPTIONS responses cannot
+    // establish write support. Each export must receive a storage acknowledgement.
     void checkMemoryEndpoint().then(result => {
       if (result.ok) {
-        console.log(`[Ensemble] Memory export ready at ${result.endpoint}`)
+        console.log(`[Ensemble] Memory endpoint reachable at ${result.endpoint}; storage is verified on export`)
       } else {
         console.warn(
           `[Ensemble] Memory export UNAVAILABLE at ${result.endpoint}`
@@ -393,12 +392,28 @@ function formatDuration(durationMs: number): string {
  * hele proces neer.
  */
 async function afhandelenExport<T>(exportPromise: Promise<T>, onResult: (result: T) => void): Promise<void> {
-  const result = await exportPromise
   try {
+    const result = await exportPromise
     onResult(result)
   } catch (err) {
     console.error('[Ensemble] Afhandeling van de memory-export mislukte:', err)
   }
+}
+
+/** A failed export remains visible in logs and the saved team timeline. */
+function memoryExportFailureMessage(result: MemoryExportResult): string {
+  const permanent = result.failureKind === 'permanent'
+  const why = result.error || `HTTP ${result.status}`
+  const recovery = result.pendingFile
+    ? `Payload bewaard in ${result.pendingFile}; er is geen automatische nieuwe poging.`
+    : `Payload niet bewaard${result.parkingError ? `: ${result.parkingError}` : ''}.`
+  const action = permanent
+    ? ' Controleer de worker-API en ENSEMBLE_MEMORY_URL; volgende exports kunnen ook mislukken.'
+    : ' Controleer de bereikbaarheid van de worker.'
+  const content = `${permanent ? '❌' : '⚠️'} Kon deze collab niet naar claude-mem schrijven (${result.endpoint}): ${why}. ${recovery}${action}`
+  if (permanent) console.error(`[Ensemble] Memory export FAILED: ${content}`)
+  else console.warn(`[Ensemble] Memory export failed: ${content}`)
+  return content
 }
 
 /** Escape special chars for Telegram MarkdownV2 */
@@ -1318,14 +1333,10 @@ export async function disbandTeam(teamId: string): Promise<ServiceResult<{ team:
         ),
         result => {
           if (result.ok) return
-          // Say it out loud, in both places the user actually looks. A silent
-          // failure here is how this feature stayed dead for weeks.
-          const why = result.error || `HTTP ${result.status}`
-          console.warn(`[Ensemble] Memory export failed (${result.endpoint}): ${why}`)
+          const content = memoryExportFailureMessage(result)
           appendMessage(teamId, {
             id: uuidv4(), teamId, from: 'ensemble', to: 'team',
-            content: `⚠️ Kon deze collab niet naar claude-mem schrijven (${result.endpoint}): ${why}. `
-              + `Payload bewaard in de runtime-map; er is geen automatische nieuwe poging.`,
+            content,
             type: 'chat', timestamp: new Date().toISOString(),
           })
         },
@@ -1347,5 +1358,6 @@ export const __testing = {
   COMPLETION_PATTERNS,
   CONTINUATION_PATTERNS,
   afhandelenExport,
+  memoryExportFailureMessage,
   postToAlertHub,
 }
