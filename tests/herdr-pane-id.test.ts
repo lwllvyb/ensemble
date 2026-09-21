@@ -8,8 +8,9 @@ function paneId(json: string): { code: number; out: string; err: string } {
   try {
     const out = execFileSync("python3", [SCRIPT], { input: json, encoding: "utf8" });
     return { code: 0, out: out.trim(), err: "" };
-  } catch (e: any) {
-    return { code: e.status ?? 1, out: (e.stdout ?? "").trim(), err: (e.stderr ?? "").trim() };
+  } catch (e: unknown) {
+    const error = e as { status?: number; stdout?: string; stderr?: string };
+    return { code: error.status ?? 1, out: (error.stdout ?? "").trim(), err: (error.stderr ?? "").trim() };
   }
 }
 

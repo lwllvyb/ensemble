@@ -19,7 +19,8 @@ function run(script: string, args: string[]): { out: string; code: number } {
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     return { out, code: 0 }
-  } catch (err: any) {
+  } catch (error: unknown) {
+    const err = error as { stdout?: string; stderr?: string; status?: number }
     return { out: `${err.stdout ?? ''}${err.stderr ?? ''}`, code: err.status ?? 1 }
   }
 }
@@ -29,15 +30,17 @@ describe('runtime root', () => {
   // De eerste versie zocht op "Team not found" terwijl de melding "Team <id> not
   // found at <pad>" is, dus die matchte nooit en was groen voor de fix bestond.
   it('postcheck kijkt in COLLAB_RUNTIME_ROOT, niet in /tmp/ensemble', () => {
-    const { out } = run(POSTCHECK, ['team-bestaat-niet'])
-    expect(out).toContain(root)
-    expect(out).not.toMatch(/\/tmp\/ensemble/)
+    const teamId = 'team-bestaat-niet'
+    const { out, code } = run(POSTCHECK, [teamId])
+    expect(code).toBe(1)
+    expect(out).toContain(`not found at ${path.join(root, teamId)}\n`)
+    expect(out).not.toContain(`not found at ${path.join('/tmp/ensemble', teamId)}\n`)
   })
 
   it('rescue kijkt in COLLAB_RUNTIME_ROOT, niet in /tmp/ensemble', () => {
     fs.mkdirSync(path.join(root, 'team-y', 'prompts'), { recursive: true })
     fs.writeFileSync(path.join(root, 'team-y', 'prompts', 'claude-1.txt'), 'hoi')
     const { out } = run(RESCUE, ['team-y'])
-    expect(out).not.toMatch(/team-dir bestaat niet/i)
+    expect(out).toContain('geen sessieregister voor team-y')
   })
 })

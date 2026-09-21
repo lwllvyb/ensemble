@@ -14,7 +14,7 @@ import assert from 'node:assert'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { resolveMemoryEndpoint, exportObservation, pendingExportFile } from '../lib/memory-export'
+import { resolveMemoryEndpoint, exportObservation } from '../lib/memory-export'
 import { __testing } from '../services/ensemble-service'
 
 const { afhandelenExport } = __testing

@@ -103,9 +103,13 @@ if [ "$CREDS" = "unreachable" ]; then
       fail 2 "Ensemble service did not come back within 10s after launchctl kickstart; check /tmp/ensemble-server.log"
     fi
   else
-    fail 2 "Service kan niet bij de credential-opslag, en er is geen launchd-target om te herstarten.
-     Fix: pkill -f 'tsx server.ts' && cd ~/Documents/ensemble && nohup ./node_modules/.bin/tsx server.ts > /tmp/ensemble-server.log 2>&1 &
-     Of installeer de launchd-agent (scripts/install-launchd.sh), dan herstart preflight 'm voortaan zelf."
+    # Het endpoint meet bestandsaanwezigheid, niet tokenvaliditeit. Op een
+    # schone runner ontbreken credentials normaal; lokaal kan HOME of de
+    # login-inrichting fout zijn. Zonder beheerd target helpt herstarten niet.
+    # Laat de CLI- en auth-controles hieronder bepalen of starten mogelijk is.
+    warn "Credential-opslag ontbreekt of is onbereikbaar; geen launchd-target om te herstarten.
+     Op een schone runner is dit normaal. Controleer lokaal HOME en de agent-login.
+     Preflight gaat door met de agent-CLI- en auth-controles."
   fi
 elif [ "$CREDS" = "readable" ]; then
   UP=$(printf '%s' "$HEALTH" | python3 -c "import json,sys; print(json.load(sys.stdin).get('uptimeSeconds',0))" 2>/dev/null || echo 0)

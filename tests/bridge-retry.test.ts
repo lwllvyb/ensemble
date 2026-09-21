@@ -50,8 +50,7 @@ function fakeApi(respond: (postCount: number) => number): Promise<{ url: string;
         res.end('ok')
         return
       }
-      let body = ''
-      req.on('data', chunk => { body += chunk })
+      req.resume()
       req.on('end', () => {
         count += 1
         const status = respond(count)

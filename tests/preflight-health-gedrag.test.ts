@@ -1,32 +1,40 @@
-/**
- * De preflight moet de health-uitvraag ook echt gebruiken.
- *
- * De eerste tests hiervoor controleerden of het script de juiste tekst bevatte.
- * Die waren groen terwijl het script in de praktijk nooit de goede tak nam: het
- * health-endpoint was hernoemd naar credentialStore met de waarde "readable",
- * en één vergelijking stond nog op "ok". Gevolg was dat de preflight altijd op
- * het leeftijdsvangnet terugviel, precies het gedrag dat deze taak wegneemt.
- *
- * Deze test draait de preflight tegen een neppe health-server en kijkt naar wat
- * hij zegt.
- */
+/** Draai de echte preflight met een health-server en geisoleerde CLI-tools. */
+import fs from 'fs'
+import os from 'os'
 import http from 'http'
 import path from 'path'
-import { execFile } from 'child_process'
+import { execFile, execFileSync } from 'child_process'
 import { promisify } from 'util'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 const execFileAsync = promisify(execFile)
-import { afterEach, describe, expect, it } from 'vitest'
-
 const PREFLIGHT = path.resolve(process.cwd(), 'scripts/collab-preflight.sh')
-
+const python = execFileSync('/bin/bash', ['-c', 'command -v python3'], { encoding: 'utf8' }).trim()
 let server: http.Server | undefined
+let root: string
+
+beforeEach(() => {
+  root = fs.mkdtempSync(path.join(os.tmpdir(), 'ensemble-preflight-'))
+  // Alleen deze tools staan in PATH: geen echte agents of launchctl/tmux.
+  for (const tool of ['bash', 'curl', 'tr', 'id', 'seq', 'rm', 'grep', 'cat', 'pgrep', 'head', 'ps', 'xargs', 'date']) {
+    const executable = execFileSync('/bin/bash', ['-c', `command -v ${tool}`], { encoding: 'utf8' }).trim()
+    fs.symlinkSync(executable, path.join(root, tool))
+  }
+  stub('python3', `if [ "$1" = "-" ]; then exit 0; fi\nexec '${python}' "$@"`)
+  stub('tmux', 'exit 0')
+  stub('sleep', 'exit 0')
+})
 afterEach(() => {
   server?.close()
   server = undefined
+  fs.rmSync(root, { recursive: true, force: true })
 })
 
-/** Start een health-endpoint dat precies dit antwoord geeft, op een vrije poort. */
+function stub(name: string, body: string): void {
+  fs.rmSync(path.join(root, name), { force: true })
+  fs.writeFileSync(path.join(root, name), `#!/bin/bash\n${body}\n`, { mode: 0o755 })
+}
+
 async function nepServer(body: unknown): Promise<string> {
   server = http.createServer((req, res) => {
     if (req.url === '/api/v1/health') {
@@ -43,46 +51,58 @@ async function nepServer(body: unknown): Promise<string> {
   return `http://127.0.0.1:${adres.port}`
 }
 
-// Asynchroon, niet execFileSync. De neppe server draait in ditzelfde proces en
-// een synchrone aanroep blokkeert de event loop, waardoor die server de
-// health-vraag nooit kan beantwoorden en curl blijft hangen tot de timeout.
-async function draaiPreflight(url: string): Promise<string> {
+async function draaiPreflight(url: string): Promise<{ out: string; code: number }> {
   try {
-    const { stdout, stderr } = await execFileAsync(PREFLIGHT, ['claude'], {
+    const { stdout, stderr } = await execFileAsync(PREFLIGHT, ['codex'], {
       env: {
         ...process.env,
+        HOME: root,
+        PATH: root,
         ENSEMBLE_URL: url,
-        // Een label dat niet bestaat, zodat een herstartpoging nooit een echte
-        // service op deze machine raakt.
         ENSEMBLE_LAUNCHD_LABEL: 'dev.ensemble.test-bestaat-niet',
+        COLLAB_OVERRIDE_FILE: path.join(root, 'override'),
       },
       encoding: 'utf8',
-      timeout: 25000,
+      timeout: 10000,
     })
-    return `${stdout}${stderr}`
-  } catch (err: any) {
-    return `${err.stdout ?? ''}${err.stderr ?? ''}`
+    return { out: `${stdout}${stderr}`, code: 0 }
+  } catch (error: unknown) {
+    const err = error as { stdout?: string; stderr?: string; code?: number }
+    return { out: `${err.stdout ?? ''}${err.stderr ?? ''}`, code: err.code ?? 1 }
   }
 }
 
 describe('preflight gebruikt de health-uitvraag', () => {
   it('meldt de service gezond als de opslag leesbaar is, zonder over leeftijd te beginnen', async () => {
     const url = await nepServer({ status: 'healthy', credentialStore: 'readable', uptimeSeconds: 7200 })
-    const uit = await draaiPreflight(url)
-    expect(uit).toMatch(/komt bij de credential-opslag/i)
-    expect(uit).not.toMatch(/val terug op de leeftijdscheck/i)
-  }, 30000)
+    const { out } = await draaiPreflight(url)
+    expect(out).toMatch(/komt bij de credential-opslag/i)
+    expect(out).not.toMatch(/val terug op de leeftijdscheck/i)
+  })
 
   it('valt terug op de leeftijdscheck als het veld ontbreekt', async () => {
+    stub('pgrep', 'exit 1')
     const url = await nepServer({ status: 'healthy', version: '1.0.0' })
-    const uit = await draaiPreflight(url)
-    expect(uit).toMatch(/val terug op de leeftijdscheck/i)
-  }, 30000)
+    const { out } = await draaiPreflight(url)
+    expect(out).toMatch(/val terug op de leeftijdscheck/i)
+  })
 
-  it('grijpt in als de service niet bij de opslag kan', async () => {
+  it('waarschuwt zonder launchd-target en laat de ontbrekende CLI de exitcode bepalen', async () => {
     const url = await nepServer({ status: 'healthy', credentialStore: 'unreachable' })
-    const uit = await draaiPreflight(url)
-    expect(uit).toMatch(/credential-opslag/i)
-    expect(uit).not.toMatch(/val terug op de leeftijdscheck/i)
-  }, 30000)
+    const { out, code } = await draaiPreflight(url)
+    expect(out).toMatch(/geen launchd-target/i)
+    expect(out).not.toMatch(/val terug op de leeftijdscheck/i)
+    expect(out).toContain('codex binary not in PATH')
+    expect(code).toBe(4)
+  })
+
+  it('herstart via launchd als het target bestaat en gaat daarna door naar de CLI-controle', async () => {
+    stub('launchctl', `echo "$*" >> '${root}/launchctl.log'\nexit 0`)
+    const url = await nepServer({ status: 'healthy', credentialStore: 'unreachable' })
+    const { out, code } = await draaiPreflight(url)
+    expect(fs.readFileSync(path.join(root, 'launchctl.log'), 'utf8')).toContain('kickstart -k gui/')
+    expect(out).toContain('Ensemble service restarted')
+    expect(out).toContain('codex binary not in PATH')
+    expect(code).toBe(4)
+  })
 })

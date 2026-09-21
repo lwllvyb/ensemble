@@ -13,8 +13,8 @@ function evidence(dir: string): number {
   try {
     execFileSync('bash', ['-c', `. "${paths}" && team_has_evidence "${dir}"`], { encoding: 'utf8' })
     return 0
-  } catch (err: any) {
-    return err.status ?? 1
+  } catch (err: unknown) {
+    return (err as { status?: number }).status ?? 1
   }
 }
 

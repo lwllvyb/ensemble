@@ -129,7 +129,7 @@ describe('sessieregister (service)', () => {
     const { mod, sessionsFile } = await setupService(team, order)
 
     const originalWrite = fs.writeFileSync.bind(fs)
-    const writeSpy = vi.spyOn(fs, 'writeFileSync').mockImplementation(((file: fs.PathOrFileDescriptor, data: any, opts?: any) => {
+    const writeSpy = vi.spyOn(fs, 'writeFileSync').mockImplementation(((file: fs.PathOrFileDescriptor, data: string | NodeJS.ArrayBufferView, opts?: fs.WriteFileOptions | BufferEncoding) => {
       if (String(file) === sessionsFile) order.push('register-written')
       return originalWrite(file, data, opts)
     }) as typeof fs.writeFileSync)

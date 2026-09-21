@@ -23,8 +23,9 @@ function runHook(): { out: string; code: number } {
   try {
     const out = execFileSync(HOOK, [], { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
     return { out, code: 0 }
-  } catch (err: any) {
-    return { out: `${err.stdout ?? ''}${err.stderr ?? ''}`, code: err.status ?? 1 }
+  } catch (err: unknown) {
+    const error = err as { stdout?: string; stderr?: string; status?: number }
+    return { out: `${error.stdout ?? ''}${error.stderr ?? ''}`, code: error.status ?? 1 }
   }
 }
 

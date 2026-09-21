@@ -59,8 +59,9 @@ function draaiPostcheck(teamId: string): string {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
     })
-  } catch (err: any) {
-    return `${err.stdout ?? ''}${err.stderr ?? ''}`
+  } catch (err: unknown) {
+    const error = err as { stdout?: string; stderr?: string }
+    return `${error.stdout ?? ''}${error.stderr ?? ''}`
   }
 }
 
