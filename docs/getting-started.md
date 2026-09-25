@@ -60,7 +60,7 @@ npm install -g @anthropic-ai/claude-code
 npm install -g @openai/codex
 ```
 
-> **Want to use other agents?** Ensemble is agent-agnostic. You can add Grok, Gemini CLI (experimental), Aider, or any CLI tool via `agents.json`, and run teams of three. See [Configuration → Supported Agents](configuration#supported-agents) for details.
+> **Want to use other agents?** Ensemble is agent-agnostic. You can add Grok, GLM, Gemini CLI (experimental), opencode, or any CLI tool via `agents.json`, and run teams of three. See [Configuration → Supported Agents](configuration#supported-agents) for details.
 
 Each agent CLI manages its own API keys. Make sure they're configured before running ensemble:
 

@@ -101,8 +101,9 @@ The default team is **Codex (lead) + Claude Code (worker)**. This is the tested,
 |---|---|---|
 | **Codex + Claude Code** | Fully tested | Default, just run `/collab` or `collab-launch.sh` |
 | **Grok CLI** | Tested in three-agent teams | Add explicitly (see below) |
+| **GLM** | Tested in four-agent teams | Add explicitly (see below) |
 | **Gemini CLI** | Experimental | Add explicitly (see below) |
-| **Aider** | Untested | Add explicitly (see below) |
+| **opencode** | Untested | Add explicitly (see below) |
 | **Any CLI tool** | Via `agents.json` | [Add a custom agent](https://michelhelsdingen.github.io/ensemble/configuration#adding-a-custom-agent) |
 
 ### Using a different team composition

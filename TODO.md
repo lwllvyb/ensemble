@@ -1,39 +1,42 @@
 # Ensemble — Release Checklist
 
-## P0 — Release Blockers
+Deze checklist dateert van vóór de eerste release. De meeste P0's en een deel van de
+P1's zijn intussen opgelost (zie hieronder). Wat resteert staat onder Open.
 
-| # | Issue | Locatie |
-|---|-------|---------|
-| 1 | Geen LICENSE file | repo root |
-| 2 | Geen README.md | repo root |
-| 3 | Geen CI/CD (.github/workflows/) | repo root |
-| 4 | Open CORS * + 0.0.0.0 binding | server.ts:15-16, 35-38, 110-112 |
-| 5 | Geen auth/rate limiting op API | server.ts |
-| 6 | Hardcoded permissive agent commands (--full-auto, --dangerously-skip-permissions) | agent-spawner.ts:35-39, 58-60 |
-| 7 | strict: false in tsconfig | tsconfig.json:7 |
+## P0: Release Blockers (opgelost)
 
-## P1 — Belangrijk
+| # | Issue | Status |
+|---|-------|--------|
+| 1 | Geen LICENSE file | Opgelost: `LICENSE` (MIT) in repo root |
+| 2 | Geen README.md | Opgelost: `README.md` in repo root |
+| 3 | Geen CI/CD (.github/workflows/) | Opgelost: `.github/workflows/ci.yml` + `pages.yml` |
+| 4 | Open CORS * + 0.0.0.0 binding | Opgelost: CORS whitelist via `ENSEMBLE_CORS_ORIGIN`, default bind `127.0.0.1` (server.ts) |
+| 5 | Geen auth/rate limiting op API | Deels opgelost: per-IP rate limiting in server.ts, er is nog geen auth |
+| 6 | Hardcoded permissive agent commands | Opgelost: flags staan nu per agent in `agents.json`, niet hardcoded in `agent-spawner.ts` |
+| 7 | strict: false in tsconfig | Opgelost: `strict: true` (tsconfig.json:7) |
 
-| # | Issue |
-|---|-------|
-| 1 | Geen test suite — geen test/lint scripts in package.json |
-| 2 | JSONL persistence zonder file locking — race conditions bij multi-process |
-| 3 | ~~Undocumented ai-maestro dependency~~ → renamed to ~/.ensemble |
-| 4 | execAsync met string interpolation — command injection risk in agent-runtime |
-| 5 | Shell script embeds variabelen in inline Python — ensemble-bridge.sh:33-89 |
-| 6 | Code duplicatie in cli/monitor.ts:100-133 (apiGet/apiPost + polling) |
-| 7 | Geen CONTRIBUTING.md |
-| 8 | Geen .gitignore voor generated/temp files |
+## P1: Belangrijk
 
-## P2 — Nice-to-haves
+| # | Issue | Status |
+|---|-------|--------|
+| 1 | Geen test suite, geen test/lint scripts in package.json | Opgelost: `npm test` (vitest) + `npm run lint`, `tests/` map |
+| 2 | JSONL persistence zonder file locking, race conditions bij multi-process | Opgelost: lock met timeout in `lib/ensemble-registry.ts` |
+| 3 | ~~Undocumented ai-maestro dependency~~ → renamed to ~/.ensemble | Opgelost |
+| 4 | execAsync met string interpolation, command injection risk in agent-runtime | Open: nog steeds template strings naar `execAsync` in `lib/agent-runtime.ts`, namen lopen wel door `sanitizeName()`, niet apart geverifieerd of dat afdoende is |
+| 5 | Shell script embeds variabelen in inline Python, ensemble-bridge.sh | Opgelost: script is nu pure bash, geen ingebedde Python meer |
+| 6 | Code duplicatie in cli/monitor.ts (apiGet/apiPost + polling) | Open: dezelfde `apiGet`/`apiPost` staan nog los in `cli/monitor.ts` én `cli/ensemble.ts` |
+| 7 | Geen CONTRIBUTING.md | Opgelost: `CONTRIBUTING.md` in repo root |
+| 8 | Geen .gitignore voor generated/temp files | Opgelost: `.gitignore` aanwezig |
 
-- **iTerm2 split-pane visibility voor parallelle agents** — Claude Code's TeamCreate + Agent met `team_name` spawnt elke teammate in zijn eigen tmux pane, zichtbaar via iTerm2 split. Overwegen voor ensemble's tmux-based orchestratie: elke gespawnde agent krijgt automatisch een dedicated pane in de huidige iTerm2 window zodat de gebruiker live kan meekijken per agent i.p.v. logs scrollen. Referentie: ervaren 14 apr 2026 tijdens og-ops planning met sw-pm + sw-architect parallel.
-- API docs (OpenAPI/Swagger)
-- Plugin/extensibility system voor custom agent programs
-- Persistent storage beyond JSONL (SQLite etc.)
-- Health check endpoint verbeteren (meer diagnostics)
-- Configurable agent timeout/retry
-- Structured logging (niet console.log)
+## P2: Nice-to-haves (nog open)
+
+- **iTerm2 split-pane visibility voor parallelle agents**: inmiddels gebouwd (herdr pane / native iTerm split / tmux fallback, zie README "Monitor selection"). Item kan vervallen.
+- API docs (OpenAPI/Swagger): `docs/api.md` bestaat, maar is handgeschreven proza, geen OpenAPI/Swagger-spec
+- Plugin/extensibility system voor custom agent programs: grotendeels opgelost via `agents.json` (zie README "Add a custom agent"), geen losse plugin-laag
+- Persistent storage beyond JSONL (SQLite etc.): nog steeds JSONL
+- Health check endpoint verbeteren (meer diagnostics): nog open
+- Configurable agent timeout/retry: nog open (alleen een vaste 15s timeout voor remote hosts in `agent-spawner.ts`)
+- Structured logging (niet console.log): nog open, `console.log`/`console.error` nog verspreid over server.ts/lib/services
 
 ## Architecture & Code Quality
 
