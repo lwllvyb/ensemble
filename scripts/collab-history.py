@@ -11,7 +11,7 @@ Dit script bouwt daarom niets nieuws op. Het leest wat er al ligt en maakt de
 samenvatting die er destijds niet gekomen is, op het moment dat je hem opvraagt.
 
     collab-history                       de laatste sessies
-    collab-history granit                alles over Granit
+    collab-history example               everything about the example team
     collab-history --toon 3b880c02       samenvatting van die sessie
     collab-history --toon 3b880c02 --vol volledig transcript
     collab-history --zonder-samenvatting alleen wat nooit is samengevat

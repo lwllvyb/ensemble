@@ -215,7 +215,7 @@ Each status is `ok`, `down`, `limit`, `slow`, or `unknown`; `detail` is optional
 Missing agents count as `unknown`. A command failure, invalid JSON, or a 60-second
 timeout warns and continues with the existing checks. Explicitly selected `down` or
 `limit` agents abort with exit code `7`, listing healthy alternatives. For the default
-pair, preflight replaces unavailable agents in `fallbackOrder`, without duplicates;
+pair and agents selected through `COLLAB_AGENTS`, preflight replaces unavailable agents in `fallbackOrder`, without duplicates;
 no healthy replacement also exits `7`. `slow` and `unknown` only warn.
 
 `maxTeamMinutes` must be positive. At the limit the service asks all agents for a

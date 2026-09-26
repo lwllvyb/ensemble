@@ -52,16 +52,16 @@ actually needs (`collab-preflight.sh codex,claude,grok`, or `COLLAB_AGENTS`):
    the caller's shell passed while the spawned agent was logged out
 
 Exit codes: 0 ok, 1 service down, 2 stale service, 3 claude broken or a named agent
-unavailable, 4 codex broken, 5 DNS, 6 grok broken.
+unavailable, 4 codex broken, 5 DNS, 6 grok broken, 7 health hook reports an unavailable agent
+without a permitted healthy fallback.
 
-### Named agents fail loudly, unnamed ones fall back
+### Explicit arguments fail loudly, environment defaults allow fallback
 
-If you name your agents (third argument to `collab-launch.sh`, or `COLLAB_AGENTS`), a broken one
-is a hard failure: preflight reports the broken CLI with its own exit code (3 for claude, 4 for
-codex, 6 for grok) and collab-launch.sh then aborts with exit 1. Only the implicit default pair
-gets the auto-fallback that drops
-to codex-only or claude-only. This is deliberate: if you asked for three agents you want to hear
-that one is broken, not silently get two.
+If you pass agents as the third argument to `collab-launch.sh`, a broken one is a hard failure:
+preflight reports the broken CLI with its own exit code (3 for claude, 4 for codex, 6 for grok, 7 for an unhealthy provider)
+and collab-launch.sh then aborts with exit 1. `COLLAB_AGENTS` is the standard set and retains
+auto-fallback to healthy alternatives. Every swap is printed as a warning. The implicit default
+pair also retains auto-fallback.
 
 ### Why the postcheck catches it
 `scripts/collab-postcheck.sh` runs 30s after spawn (background):

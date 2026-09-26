@@ -5,11 +5,11 @@ import path from 'path'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { AgentNotRunningError, TmuxRuntime } from '../lib/agent-runtime'
 
-// Deze test praat met een ECHTE tmux-server op een eigen socket, zodat hij
-// niets van lopende teams raakt. Aanleiding (26-09-2026): Claude sloot zich
-// af bij de trustvraag, de lege zsh leek "ready" op de ❯ uit de prompt, en de
-// startprompt werd als shellcommando getypt. "the lead's plan" opende een
-// aanhalingsteken; de pane bleef hangen op quote> en slikte elk teambericht.
+// This test talks to a REAL tmux server on its own socket, so it cannot affect
+// running teams. It covers a Claude trust prompt closing the agent, an empty
+// zsh looking "ready" because of the ❯ prompt, and a startup prompt being
+// typed as a shell command. "the lead's plan" opened a quote; the pane stayed
+// at quote> and swallowed every team message.
 
 const HAS_TMUX = (() => {
   try { execFileSync('tmux', ['-V'], { stdio: 'ignore' }); return true } catch { return false }

@@ -2,7 +2,7 @@
  * Startup dialogs that an agent CLI shows before it accepts input, and the
  * keys that get past them.
  *
- * Two lessons from 26-09-2026 are built in:
+ * Two lessons from the September 2026 startup fixes are built in:
  * - Claude Code's trust dialog puts the cursor on "No, exit". A bare Enter
  *   closed Claude and left an empty shell. The selected option decides the keys.
  * - The capture includes scrollback. A dialog that was already answered stayed

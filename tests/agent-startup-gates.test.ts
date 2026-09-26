@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest'
 import { detectLiveGate } from '../lib/startup-gates'
 import { isShellCommand } from '../lib/agent-runtime'
 
-// Echte schermtekst van Claude Code 2.1.283 in een nieuwe, onvertrouwde map
-// (26-09-2026). De cursor staat standaard op "No, exit": een kale Enter sluit
-// Claude af en laat een lege shell achter.
+// Real screen text from Claude Code 2.1.283 in a new, untrusted directory.
+// The cursor defaults to "No, exit": a bare Enter closes Claude and leaves an
+// empty shell behind.
 const CLAUDE_TRUST_NO_SELECTED = [
   '────────────────────────────────────────────────────────────────────────────────',
   ' Accessing workspace:',

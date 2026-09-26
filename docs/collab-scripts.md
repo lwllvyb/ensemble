@@ -39,9 +39,9 @@ does not have to be retyped:
 | 3rd (`agents`) | `COLLAB_AGENTS` | argument > env var > default pair |
 | 4th (`template`) | `COLLAB_TEMPLATE` | argument > env var > generic lead/worker roles |
 
-Naming agents, by argument or by `COLLAB_AGENTS`, also disables the auto-fallback that
-preflight uses to swap out a dead agent. A named agent that is broken becomes a hard preflight
-failure instead of a silent substitution.
+An explicit third argument disables the auto-fallback that preflight uses to swap out a dead
+agent. `COLLAB_AGENTS` is the standard set and keeps fallback enabled. Every substitution is
+printed as a warning. A broken agent named as the third argument becomes a hard preflight failure.
 
 What it does:
 1. Starts the ensemble server (if not running)
@@ -108,7 +108,8 @@ when two collabs run at the same time.
 ./scripts/collab-preflight.sh [agents-csv]
 ```
 
-Only the CLIs you name are checked, so a codex quota wall does not block a `grok,claude` run.
+Only the CLIs in the explicit argument or `COLLAB_AGENTS` are checked, so a codex quota wall
+does not block a `grok,claude` run. When neither is supplied, the default pair is checked.
 The codex check is a real `codex exec` that must compute a sum and answer with the result: an
 auth mode that rejects the configured model answers with an ordinary error containing no quota
 wording, and used to be reported as healthy right before the agent spawned and sat silent all
@@ -128,6 +129,7 @@ they're clear.
 | 4 | Codex CLI broken |
 | 5 | DNS/network issue |
 | 6 | Grok CLI broken |
+| 7 | Health hook reports a selected agent down or limited, with no permitted healthy fallback |
 
 ---
 
