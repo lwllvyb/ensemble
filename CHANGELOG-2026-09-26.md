@@ -5,6 +5,7 @@
 This release tightens the startup and shutdown path for multi-agent teams.
 
 - A configurable health hook can report agent status before launch. An explicitly selected unhealthy agent now makes preflight fail with exit 7. A team time limit asks agents for a final conclusion and stops the team after the configured grace period.
+- Optional `agentEnv` configuration adds validated environment variables to spawned agents, including with an existing tmux server; invalid entries produce a names-only warning.
 - A task preamble can be configured and is included in every startup prompt.
 - Alert hub delivery is opt-in. Set both `ENSEMBLE_ALERT_HUB_URL` and `ALERT_HUB_SECRET` to use the hub. `ALERT_HUB_SECRET` by itself does not select the hub and does not enable direct Telegram. Direct Telegram still requires both `ENSEMBLE_TELEGRAM_BOT_TOKEN` and `ENSEMBLE_TELEGRAM_CHAT_ID`.
 - Sentinel completion is stricter: prompt rules 7 and 8 require agents to answer open questions and send the exact `<<COLLAB_DONE>>` sentinel after the latest substantive teammate content. New content requires a substantive response and a fresh sentinel. The watchdog skips further nudges after a sentinel.

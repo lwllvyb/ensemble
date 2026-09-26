@@ -7,6 +7,7 @@
 import { v4 as uuidv4 } from 'uuid'
 import path from 'path'
 import { fileURLToPath } from 'url'
+import { readEnsembleConfig } from './ensemble-config'
 import { getRuntime } from './agent-runtime'
 import { getSelfHostId } from './hosts-config'
 import { buildAgentCommandParts, shellEscape } from './agent-config'
@@ -78,9 +79,11 @@ export async function spawnLocalAgent(options: SpawnAgentOptions): Promise<Spawn
   const startCommand = resolveStartCommand(options.program, cwd)
 
   // Forward ENSEMBLE_* and agent-specific env vars to tmux session
-  const envForward = Object.entries(process.env)
+  const inheritedEnv = Object.entries(process.env)
     .filter(([k]) => k.startsWith('ENSEMBLE_') || k.startsWith('NVIDIA_') || k.startsWith('OPENAI_') || k.startsWith('ANTHROPIC_'))
     .filter(([, v]) => v)
+  // Explicit pane exports also reach shells created by an already-running tmux server.
+  const envForward = Object.entries({ ...Object.fromEntries(inheritedEnv), ...readEnsembleConfig().agentEnv })
     // Ongeescaped ging de waarde als kale toetsaanslagen de pane in: API-sleutels
     // stonden zo letterlijk in de tmux-scrollback van elke agent.
     .map(([k, v]) => `export ${k}=${shellEscape(v as string)}`)

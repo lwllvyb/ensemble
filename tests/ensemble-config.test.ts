@@ -5,7 +5,7 @@ import { readEnsembleConfig } from '../lib/ensemble-config'
 
 const root = fs.mkdtempSync(path.resolve('tmp/config-'))
 afterAll(() => fs.rmSync(root, { recursive: true, force: true }))
-afterEach(() => { vi.unstubAllEnvs(); fs.rmSync(path.join(root, 'config.json'), { force: true }) })
+afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); fs.rmSync(path.join(root, 'config.json'), { force: true }) })
 function config(value: unknown) {
   const file = path.join(root, 'config.json')
   fs.writeFileSync(file, JSON.stringify(value))
@@ -97,4 +97,32 @@ it('disables the alert hub with an explicitly empty environment override', () =>
 it.each([42, null, '   '])('ignores invalid or blank alert hub configuration %j', alertHubUrl => {
   config({ alertHubUrl })
   expect(readEnsembleConfig().alertHubUrl).toBe('')
+})
+
+it('reads agentEnv without trimming values or applying an environment override', () => {
+  config({ agentEnv: { MY_TOOL_NESTED: '1', _EMPTY: '', WITH_SPACE: ' value ' } })
+  vi.stubEnv('ENSEMBLE_AGENT_ENV', '{"OTHER":"ignored"}')
+  expect(readEnsembleConfig().agentEnv).toEqual({ MY_TOOL_NESTED: '1', _EMPTY: '', WITH_SPACE: ' value ' })
+})
+it('ignores invalid agentEnv entries with one names-only warning across repeated reads', () => {
+  config({ agentEnv: {
+    GOOD_1: 'ok', lowercase: 'secret-one', 'BAD-NAME': 'secret-two', '1BAD': 'secret-three',
+    NUMBER: 42, OBJECT: {}, LF: 'secret\nvalue', CR: 'secret\rvalue', 'BAD\nKEY': 'secret-four', 'TRAILING\n': 'secret-five',
+  } })
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+  expect(readEnsembleConfig().agentEnv).toEqual({ GOOD_1: 'ok' })
+  readEnsembleConfig()
+  expect(warn).toHaveBeenCalledTimes(1)
+  const warning = String(warn.mock.calls[0][0])
+  expect(warning).toContain('lowercase')
+  expect(warning).toContain('LF')
+  expect(warning).not.toMatch(/secret|42|\n|\r/)
+})
+it.each([null, [], 'secret-string', 42])('ignores non-object agentEnv %j with one warning', agentEnv => {
+  config({ agentEnv })
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+  expect(readEnsembleConfig().agentEnv).toBeUndefined()
+  readEnsembleConfig()
+  expect(warn).toHaveBeenCalledTimes(1)
+  expect(String(warn.mock.calls[0][0])).not.toContain('secret-string')
 })

@@ -197,7 +197,15 @@ Environment variables override file values. Missing or invalid settings use defa
 | `fallbackOrder` | `ENSEMBLE_FALLBACK_ORDER` (comma-separated) | `["codex","claude","glm","grok","gemini"]` |
 | `maxTeamMinutes` | `ENSEMBLE_MAX_TEAM_MINUTES` | No time limit |
 | `graceMinutes` | `ENSEMBLE_GRACE_MINUTES` | `3` |
+| `agentEnv` | None | No additional variables |
 | `taskPreamble` | `ENSEMBLE_TASK_PREAMBLE` | No preamble |
+
+`agentEnv` adds environment variables to each locally spawned agent, including
+when the tmux server is already running. For example,
+`{"agentEnv":{"MY_TOOL_NESTED":"1"}}` tells a tool it is running inside a team.
+Configured values override forwarded process variables. Names must match
+`^[A-Z_][A-Z0-9_]*$`; values must be strings without carriage returns or newlines.
+Invalid entries are ignored with one warning listing names only.
 
 Set `alertHubUrl` and `ALERT_HUB_SECRET` to enable summary notifications through
 an alert hub. An explicitly empty `ENSEMBLE_ALERT_HUB_URL` disables the hub, even
