@@ -17,6 +17,12 @@ export default defineConfig({
       ENSEMBLE_DATA_DIR: path.join(temporary, 'data'),
       ENSEMBLE_CONFIG: path.join(temporary, 'absent-config.json'),
       ENSEMBLE_MEMORY_URL: 'http://localhost:1/api/memory/save',
+      // Never send real notifications from a test run, even when the developer's
+      // shell exports these (a test disband otherwise reaches Telegram).
+      ENSEMBLE_TELEGRAM_BOT_TOKEN: '',
+      ENSEMBLE_TELEGRAM_CHAT_ID: '',
+      ALERT_HUB_SECRET: '',
+      ENSEMBLE_ALERT_HUB_URL: '',
     },
   },
 })
