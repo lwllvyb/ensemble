@@ -13,6 +13,15 @@ collab_runtime_dir() {
   printf '%s/%s\n' "$(collab_runtime_root)" "$team_id"
 }
 
+collab_ensure_runtime_dir() {
+  local team_id="${1:?team id required}"
+  local dir
+  dir="$(collab_runtime_dir "$team_id")"
+  mkdir -p -m 700 "$dir"
+  chmod 700 "$dir"
+  printf '%s\n' "$dir"
+}
+
 collab_messages_file() {
   local team_id="${1:?team id required}"
   printf '%s/messages.jsonl\n' "$(collab_runtime_dir "$team_id")"

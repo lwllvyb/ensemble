@@ -26,6 +26,42 @@ function run(script: string, args: string[]): { out: string; code: number } {
 }
 
 describe('runtime root', () => {
+  it('creates each team runtime directory with owner-only permissions', async () => {
+    const { ensureCollabDirs, collabRuntimeDir } = await import('../lib/collab-paths')
+    const teamId = 'team-private'
+    ensureCollabDirs(teamId)
+    expect(fs.statSync(collabRuntimeDir(teamId)).mode & 0o777).toBe(0o700)
+  })
+
+  it('tightens an existing team directory to owner-only permissions', async () => {
+    const { ensureCollabDirs, collabRuntimeDir } = await import('../lib/collab-paths')
+    const teamId = 'team-existing'
+    fs.mkdirSync(collabRuntimeDir(teamId), { recursive: true, mode: 0o755 })
+    fs.chmodSync(collabRuntimeDir(teamId), 0o755)
+    ensureCollabDirs(teamId)
+    expect(fs.statSync(collabRuntimeDir(teamId)).mode & 0o777).toBe(0o700)
+  })
+
+  it('shell runtime helper creates owner-only team directories', () => {
+    const teamId = 'team-shell-private'
+    const script = `source '${path.resolve(process.cwd(), 'scripts/collab-paths.sh')}'; collab_ensure_runtime_dir '${teamId}'`
+    execFileSync('/bin/bash', ['-c', script], {
+      env: { ...process.env, COLLAB_RUNTIME_ROOT: root }, encoding: 'utf8',
+    })
+    expect(fs.statSync(path.join(root, teamId)).mode & 0o777).toBe(0o700)
+  })
+
+  it('shell runtime helper tightens an existing team directory', () => {
+    const teamId = 'team-shell-existing'
+    fs.mkdirSync(path.join(root, teamId), { recursive: true, mode: 0o755 })
+    fs.chmodSync(path.join(root, teamId), 0o755)
+    const script = `source '${path.resolve(process.cwd(), 'scripts/collab-paths.sh')}'; collab_ensure_runtime_dir '${teamId}'`
+    execFileSync('/bin/bash', ['-c', script], {
+      env: { ...process.env, COLLAB_RUNTIME_ROOT: root }, encoding: 'utf8',
+    })
+    expect(fs.statSync(path.join(root, teamId)).mode & 0o777).toBe(0o700)
+  })
+
   it('trimt witruimte rond COLLAB_RUNTIME_ROOT zoals de TypeScript-paden', () => {
     const trimmed = path.join(root, 'team-trim')
     const out = execFileSync('/bin/bash', ['-c', `source '${path.resolve(process.cwd(), 'scripts/collab-paths.sh')}'; collab_runtime_dir team-trim`], {

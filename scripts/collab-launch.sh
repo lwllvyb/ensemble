@@ -34,12 +34,10 @@ AGENTS="${3:-${COLLAB_AGENTS:-}}"
 TEMPLATE="${4:-${COLLAB_TEMPLATE:-}}"
 
 # ─── Auto-fallback to codex-only when claude auth is dead (set by preflight) ───
-# Preflight writes OVERRIDE_FILE when claude tmux-probe failed. Same default
-# path as collab-preflight.sh, overridable via COLLAB_OVERRIDE_FILE zodat een
-# aanroeper die meerdere teams tegelijk start hier eigen isolatie voor kan
-# regelen, in plaats van dit met elke andere launch te delen.
+# Preflight writes OVERRIDE_FILE when an agent probe selects a fallback. The
+# default is under the shared runtime root and can be overridden by callers.
 # Only kicks in if caller didn't specify AGENTS explicitly.
-OVERRIDE_FILE="${COLLAB_OVERRIDE_FILE:-/tmp/collab-agents-override.txt}"
+OVERRIDE_FILE="${COLLAB_OVERRIDE_FILE:-$(collab_runtime_root)/collab-agents-override.txt}"
 API="${ENSEMBLE_URL:-http://localhost:23000}"
 HOST_ID="${ENSEMBLE_HOST_ID:-local}"
 
@@ -141,7 +139,8 @@ POLLER_PID_FILE="$(collab_poller_pid "$TEAM_ID")"
 FEED_FILE="$(collab_feed_file "$TEAM_ID")"
 TEAM_ID_FILE="$(collab_team_id_file "$TEAM_ID")"
 
-mkdir -p "$RUNTIME_DIR" "$(dirname "$MESSAGES_FILE")" "$(dirname "$FEED_FILE")"
+collab_ensure_runtime_dir "$TEAM_ID" >/dev/null
+mkdir -p "$(dirname "$MESSAGES_FILE")" "$(dirname "$FEED_FILE")"
 touch "$MESSAGES_FILE"
 printf '%s\n' "$TEAM_ID" > "$TEAM_ID_FILE"
 # $RUNTIME_DIR/sessions (welke tmux-sessies bij dit team horen) wordt door de

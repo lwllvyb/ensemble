@@ -8,7 +8,7 @@ import { v4 as uuidv4 } from 'uuid'
 import type { EnsembleTeam, EnsembleMessage, CreateTeamRequest, CollabTemplatesFile } from '../types/ensemble'
 import {
   createTeam, getTeam, updateTeam, loadTeams,
-  appendMessage, getMessages,
+  appendMessage, getMessages, markAgentFailed,
 } from '../lib/ensemble-registry'
 import {
   spawnLocalAgent, killLocalAgent,
@@ -145,6 +145,7 @@ class EnsembleService {
     this.idleCheckTimer.unref()
     this.watchdog = new AgentWatchdog({
       loadTeams,
+      markAgentFailed: (teamId, agentName) => markAgentFailed(teamId, agentName),
       getMessages: (teamId: string) => getMessages(teamId),
       appendMessage,
       getRuntime,
@@ -272,86 +273,92 @@ class EnsembleService {
     const config = readEnsembleConfig()
     for (const team of teams) {
       if (this.disbandingTeams.has(team.id)) continue
-      if (config.maxTeamMinutes !== undefined) {
-        const ageMs = Date.now() - new Date(team.createdAt).getTime()
-        const deadlineMs = config.maxTeamMinutes * 60_000
-        const graceMs = config.graceMinutes * 60_000
-        if (ageMs >= deadlineMs) {
-          let warningAt = this.deadlineWarnings.get(team.id)
-          if (warningAt === undefined) {
-            const persistedWarning = getMessages(team.id).find(message =>
-              message.from === 'ensemble' && message.content.startsWith('Time is up:') &&
-              Number.isFinite(Date.parse(message.timestamp)),
-            )
-            if (persistedWarning) {
-              warningAt = Date.parse(persistedWarning.timestamp)
+      try {
+        if (config.maxTeamMinutes !== undefined) {
+          const ageMs = Date.now() - new Date(team.createdAt).getTime()
+          const deadlineMs = config.maxTeamMinutes * 60_000
+          const graceMs = config.graceMinutes * 60_000
+          if (ageMs >= deadlineMs) {
+            let warningAt = this.deadlineWarnings.get(team.id)
+            if (warningAt === undefined) {
+              const persistedWarning = getMessages(team.id).find(message =>
+                message.from === 'ensemble' && message.content.startsWith('Time is up:') &&
+                Number.isFinite(Date.parse(message.timestamp)),
+              )
+              if (persistedWarning) {
+                warningAt = Date.parse(persistedWarning.timestamp)
+                this.deadlineWarnings.set(team.id, warningAt)
+              }
+            }
+            if (warningAt === undefined) {
+              warningAt = Date.now()
               this.deadlineWarnings.set(team.id, warningAt)
+              await sendTeamMessage(team.id, 'team',
+                `Time is up: send your final conclusion and then an exact <<COLLAB_DONE>> message within ${config.graceMinutes} minutes.`,
+                'ensemble')
             }
-          }
-          if (warningAt === undefined) {
-            warningAt = Date.now()
-            this.deadlineWarnings.set(team.id, warningAt)
-            await sendTeamMessage(team.id, 'team',
-              `Time is up: send your final conclusion and then an exact <<COLLAB_DONE>> message within ${config.graceMinutes} minutes.`,
-              'ensemble')
-          }
-          if (Date.now() >= warningAt + graceMs) {
-            this.disbandingTeams.add(team.id)
-            try {
-              const reason = `team stopped on time limit after ${formatDuration(ageMs)}`
-              appendMessage(team.id, {
-                id: uuidv4(), teamId: team.id, from: 'ensemble', to: 'team',
-                content: `Team ended after maximum runtime (${config.maxTeamMinutes} minutes) and grace period`,
-                type: 'chat', timestamp: new Date().toISOString(),
-              })
-              await disbandTeam(team.id, reason)
-            } catch (error) {
-              console.error(`[Ensemble] Time-limit disband failed for ${team.id}:`, error)
-            } finally {
-              this.disbandingTeams.delete(team.id)
-              this.deadlineWarnings.delete(team.id)
+            if (Date.now() >= warningAt + graceMs) {
+              this.disbandingTeams.add(team.id)
+              try {
+                const reason = `team stopped on time limit after ${formatDuration(ageMs)}`
+                appendMessage(team.id, {
+                  id: uuidv4(), teamId: team.id, from: 'ensemble', to: 'team',
+                  content: `Team ended after maximum runtime (${config.maxTeamMinutes} minutes) and grace period`,
+                  type: 'chat', timestamp: new Date().toISOString(),
+                })
+                await disbandTeam(team.id, reason)
+              } catch (error) {
+                console.error(`[Ensemble] Time-limit disband failed for ${team.id}:`, error)
+              } finally {
+                this.disbandingTeams.delete(team.id)
+                this.deadlineWarnings.delete(team.id)
+              }
+              continue
             }
-            continue
           }
         }
-      }
-      if (!this.shouldAutoDisband(team)) continue
+        if (!this.shouldAutoDisband(team)) continue
 
-      this.disbandingTeams.add(team.id)
+        this.disbandingTeams.add(team.id)
 
-      try {
-        appendMessage(team.id, {
-          id: uuidv4(),
-          teamId: team.id,
-          from: 'ensemble',
-          to: 'team',
-          content: 'Auto-disband triggered after 60s idle and completion-like agent messages',
-          type: 'chat',
-          timestamp: new Date().toISOString(),
-        })
+        try {
+          appendMessage(team.id, {
+            id: uuidv4(),
+            teamId: team.id,
+            from: 'ensemble',
+            to: 'team',
+            content: 'Auto-disband triggered after 60s idle and completion-like agent messages',
+            type: 'chat',
+            timestamp: new Date().toISOString(),
+          })
 
-        await writeDisbandSummary(team.id)
-        await disbandTeam(team.id)
+          await writeDisbandSummary(team.id)
+          await disbandTeam(team.id)
+        } catch (err) {
+          console.error(`[Ensemble] Auto-disband failed for ${team.id}:`, err)
+        } finally {
+          this.disbandingTeams.delete(team.id)
+          this.deadlineWarnings.delete(team.id)
+        }
       } catch (err) {
-        console.error(`[Ensemble] Auto-disband failed for ${team.id}:`, err)
-      } finally {
-        this.disbandingTeams.delete(team.id)
-        this.deadlineWarnings.delete(team.id)
+        console.error(`[Ensemble] Idle check failed for ${team.id}:`, err)
       }
     }
   }
 
   private shouldAutoDisband(team: EnsembleTeam): boolean {
     const messages = getMessages(team.id)
-    const nonEnsembleMessages = messages.filter(message => message.from !== 'ensemble')
+    const activeNames = new Set(team.agents.filter(a => a.status === 'active').map(a => a.name))
+    const knownNames = new Set(team.agents.map(a => a.name))
+    const nonEnsembleMessages = messages.filter(message =>
+      message.from !== 'ensemble' && (!knownNames.has(message.from) || activeNames.has(message.from)),
+    )
     const lastMessage = nonEnsembleMessages[nonEnsembleMessages.length - 1]
     if (!lastMessage) return false
 
     // Every active agent must finish after the latest content from other agents.
     // Another sentinel is only a completion marker, so it does not reopen work.
-    const activeNames = new Set(team.agents.filter(a => a.status === 'active').map(a => a.name))
-    const agentNames = new Set(team.agents.map(a => a.name))
-    const contentMessages = messages.filter(m => agentNames.has(m.from) && m.content.trim() !== EXPLICIT_DONE_SENTINEL)
+    const contentMessages = messages.filter(m => activeNames.has(m.from) && m.content.trim() !== EXPLICIT_DONE_SENTINEL)
     const sentinelSenders = new Set(
       messages
         .filter(m => activeNames.has(m.from) && m.content.trim() === EXPLICIT_DONE_SENTINEL)
@@ -1039,6 +1046,10 @@ export async function createEnsembleTeam(
             console.log(`[Ensemble] ✓ Prompt injected into ${sessionName}`)
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err)
+            if (err instanceof Error && err.name === 'AgentNotRunningError') {
+              agent.status = 'failed'
+              markAgentFailed(team.id, agent.name)
+            }
             appendMessage(team.id, {
               id: uuidv4(), teamId: team.id, from: 'ensemble', to: 'team',
               content: `❌ Delivery to ${agent.name} failed: ${message}`,
@@ -1128,6 +1139,10 @@ export async function sendTeamMessage(
       }
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err)
+      if (err instanceof Error && err.name === 'AgentNotRunningError') {
+        targetAgent.status = 'failed'
+        markAgentFailed(team.id, targetAgent.name)
+      }
       appendMessage(teamId, {
         id: uuidv4(), teamId, from: 'ensemble', to: 'team',
         content: `❌ Delivery to ${targetAgent.name} failed: ${reason}`,

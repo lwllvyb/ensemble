@@ -4,7 +4,7 @@ import type {
   EnsembleTeamAgent,
   StagedWorkflowConfig,
 } from '../types/ensemble'
-import { appendMessage, getMessages } from './ensemble-registry'
+import { appendMessage, getMessages, markAgentFailed } from './ensemble-registry'
 import { getRuntime } from './agent-runtime'
 import { resolveAgentProgram } from './agent-config'
 import { collabDeliveryFile } from './collab-paths'
@@ -184,24 +184,32 @@ export class StagedWorkflowManager {
     const sessionName = `${this.options.team.name}-${agent.name}`
     const runtime = getRuntime()
 
-    if (agent.hostId && !isSelf(agent.hostId)) {
-      const host = getHostById(agent.hostId)
-      if (host) {
-        await postRemoteSessionCommand(host.url, sessionName, text)
+    try {
+      if (agent.hostId && !isSelf(agent.hostId)) {
+        const host = getHostById(agent.hostId)
+        if (host) {
+          await postRemoteSessionCommand(host.url, sessionName, text)
+        }
+        return
       }
-      return
-    }
 
-    const agentCfg = resolveAgentProgram(agent.program)
-    if (agentCfg.inputMethod === 'pasteFromFile') {
-      const tmpFile = collabDeliveryFile(this.options.team.id, sessionName)
-      fs.mkdirSync(path.dirname(tmpFile), { recursive: true })
-      fs.writeFileSync(tmpFile, text)
-      await runtime.pasteFromFile(sessionName, tmpFile)
-      return
-    }
+      const agentCfg = resolveAgentProgram(agent.program)
+      if (agentCfg.inputMethod === 'pasteFromFile') {
+        const tmpFile = collabDeliveryFile(this.options.team.id, sessionName)
+        fs.mkdirSync(path.dirname(tmpFile), { recursive: true })
+        fs.writeFileSync(tmpFile, text)
+        await runtime.pasteFromFile(sessionName, tmpFile)
+        return
+      }
 
-    await runtime.sendKeys(sessionName, text, { literal: true, enter: true, agentInput: true })
+      await runtime.sendKeys(sessionName, text, { literal: true, enter: true, agentInput: true })
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AgentNotRunningError') {
+        markAgentFailed(this.options.team.id, agent.name)
+        agent.status = 'failed'
+      }
+      throw error
+    }
   }
 
   private resetCursor(): void {

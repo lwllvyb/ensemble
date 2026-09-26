@@ -155,6 +155,68 @@ describe('AgentWatchdog', () => {
     watchdog.stop()
   })
 
+  it('marks an unreachable agent failed so a surviving teammate remains eligible', async () => {
+    teams = [makeTeam({ agents: [
+      { agentId: 'agent-1', name: 'codex-1', program: 'codex', role: 'lead', hostId: 'local', status: 'active' },
+      { agentId: 'agent-2', name: 'claude-2', program: 'claude', role: 'member', hostId: 'local', status: 'active' },
+    ] })]
+    pasteFromFile.mockImplementation(async (session: string) => {
+      if (session.includes('codex-1')) throw new Error('AgentNotRunningError')
+    })
+    const watchdog = new AgentWatchdog({
+      loadTeams: () => teams,
+      markAgentFailed: (_id, name) => {
+        teams[0].agents.find(agent => agent.name === name)!.status = 'failed'
+      },
+      getMessages: () => messages,
+      appendMessage: (_teamId, message) => appended.push(message),
+      getRuntime: () => ({ sendKeys, pasteFromFile }),
+      resolveAgentProgram: () => ({ inputMethod: 'sendKeys' }),
+      isSelf: () => true,
+      getHostById: () => undefined,
+      postRemoteSessionCommand,
+      collabDeliveryFile: (teamId, sessionName) => path.resolve('tmp/watchdog', teamId, `${sessionName}.txt`),
+      now: () => nowMs,
+      pollIntervalMs: 60_000,
+      nudgeAfterMs: 0,
+      stallAfterMs: 180_000,
+      maxFailedNudges: 1,
+    })
+    try {
+      await watchdog.poll()
+      expect(teams[0].agents[0].status).toBe('failed')
+      expect(teams[0].agents[1].status).toBe('active')
+    } finally { watchdog.stop() }
+  })
+
+  it('continues polling other teams when one team data source throws', async () => {
+    const healthy = makeTeam({ id: 'healthy' })
+    teams = [makeTeam({ id: 'broken' }), healthy]
+    const getMessages = vi.fn((teamId: string) => {
+      if (teamId === 'broken') throw new Error('corrupt feed')
+      return [makeMessage({ teamId, timestamp: '2026-03-19T10:00:00.000Z' })]
+    })
+    const watchdog = new AgentWatchdog({
+      loadTeams: () => teams,
+      getMessages,
+      appendMessage: (_teamId, message) => appended.push(message),
+      getRuntime: () => ({ sendKeys, pasteFromFile }),
+      resolveAgentProgram: () => ({ inputMethod: 'sendKeys' }),
+      isSelf: () => true,
+      getHostById: () => undefined,
+      postRemoteSessionCommand,
+      collabDeliveryFile: (teamId, sessionName) => path.resolve('tmp/watchdog', teamId, `${sessionName}.txt`),
+      now: () => nowMs,
+      pollIntervalMs: 60_000,
+      nudgeAfterMs: 90_000,
+      stallAfterMs: 180_000,
+    })
+    try {
+      await watchdog.poll()
+      expect(getMessages).toHaveBeenCalledWith('healthy')
+    } finally { watchdog.stop() }
+  })
+
   it('resets stall tracking when a new agent message arrives after a nudge', async () => {
     const watchdog = createWatchdog()
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})

@@ -4,6 +4,7 @@ import path from 'path'
 import { execFileSync } from 'child_process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { EnsembleMessage, EnsembleTeam, StagedWorkflowConfig } from '../types/ensemble'
+import type { AgentRuntime } from '../lib/agent-runtime'
 import { __testing } from '../services/ensemble-service'
 
 const TEAM_SAY_BIN = path.resolve(process.cwd(), 'scripts/team-say.sh')
@@ -264,6 +265,11 @@ describe('shouldAutoDisband() — tested via checkIdleTeams()', () => {
       loadTeams: vi.fn(() => [team]),
       appendMessage: vi.fn((_id: string, msg: EnsembleMessage) => appendedMessages.push(msg)),
       updateTeam: vi.fn((_id: string, updates: Partial<EnsembleTeam>) => ({ ...team, ...updates })),
+      markAgentFailed: vi.fn((_id: string, agentName: string) => {
+        const agent = team.agents.find(candidate => candidate.name === agentName)
+        if (agent) agent.status = 'failed'
+        return team
+      }),
       createTeam: vi.fn(),
       getTeam: vi.fn(() => team),
       saveTeams: vi.fn(),
@@ -302,6 +308,22 @@ describe('shouldAutoDisband() — tested via checkIdleTeams()', () => {
     const mod = await import('../services/ensemble-service')
     return { mod, appendedMessages }
   }
+
+  it('continues idle checks after one team message store throws', async () => {
+    const team = makeTeam({ createdAt: new Date().toISOString() })
+    const messages = team.agents.map(agent => makeMessage({ from: agent.name, content: '<<COLLAB_DONE>>' }))
+    const { mod, appendedMessages } = await setupServiceWithMocks(team, messages)
+    const registry = await import('../lib/ensemble-registry')
+    vi.mocked(registry.loadTeams).mockReturnValue([makeTeam({ id: 'broken-team' }), team])
+    vi.mocked(registry.getMessages).mockImplementation(id => {
+      if (id === 'broken-team') throw new Error('Unreadable message store')
+      return messages
+    })
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    await mod.checkIdleTeams()
+    expect(appendedMessages.some(message => message.teamId === team.id && message.content.includes('Auto-disband'))).toBe(true)
+    expect(registry.updateTeam).toHaveBeenCalledWith(team.id, expect.objectContaining({ status: 'disbanded' }))
+  })
 
   it('does NOT auto-disband on completion wording while the agents are still talking', async () => {
     // Regression, 2026-08-11: a live trio was killed mid-task because two agents
@@ -691,7 +713,15 @@ describe('worktree isolation lifecycle', () => {
     const appendedMessages: EnsembleMessage[] = []
     const createTeam = vi.fn(() => team)
     const getTeam = vi.fn(() => team)
-    const updateTeam = vi.fn((_id: string, updates: Partial<EnsembleTeam>) => ({ ...team, ...updates }))
+    const updateTeam = vi.fn((_id: string, updates: Partial<EnsembleTeam>) => {
+      Object.assign(team, updates)
+      return team
+    })
+    const markAgentFailed = vi.fn((_id: string, agentName: string) => {
+      const agent = team.agents.find(candidate => candidate.name === agentName)
+      if (agent) agent.status = 'failed'
+      return team
+    })
     const appendMessage = vi.fn((_id: string, message: EnsembleMessage) => appendedMessages.push(message))
     const spawnLocalAgent = vi.fn(async ({ name, program, workingDirectory, hostId }) => ({
       id: `${name}-id`,
@@ -719,6 +749,7 @@ describe('worktree isolation lifecycle', () => {
       loadTeams: vi.fn(() => []),
       appendMessage,
       getMessages: vi.fn(() => []),
+      markAgentFailed,
     }))
     vi.doMock('../lib/agent-spawner', () => ({
       spawnLocalAgent,
@@ -746,8 +777,9 @@ describe('worktree isolation lifecycle', () => {
     }))
     const runtime = {
       capturePane: vi.fn(async () => '>'),
-      sendKeys: vi.fn(async () => {}),
+      sendKeys: vi.fn<AgentRuntime['sendKeys']>(async () => {}),
       pasteFromFile: vi.fn(async (_session: string, _file: string) => {}),
+      sessionExists: vi.fn(async () => true),
     }
     vi.doMock('../lib/agent-runtime', () => ({ getRuntime: vi.fn(() => runtime) }))
     vi.doMock('../lib/agent-config', () => ({
@@ -782,6 +814,7 @@ describe('worktree isolation lifecycle', () => {
         createTeam,
         getTeam,
         updateTeam,
+        markAgentFailed,
         appendMessage,
         spawnLocalAgent,
         spawnRemoteAgent,
@@ -856,16 +889,32 @@ describe('worktree isolation lifecycle', () => {
     try {
       const team = makeTeam({ agents: [makeTeam().agents[0]] })
       const { mod, mocks, appendedMessages } = await setupWorktreeService(team)
-      mocks.runtime.sendKeys.mockRejectedValue(new Error('pane unavailable'))
+      const error = new Error('pane unavailable')
+      error.name = 'AgentNotRunningError'
+      mocks.runtime.sendKeys.mockRejectedValue(error)
       const creation = mod.createEnsembleTeam({
         name: team.name, description: team.description, agents: [{ program: 'codex' }],
       })
       await vi.advanceTimersByTimeAsync(5000)
       await creation
       expect(appendedMessages.some(m => m.content.includes('Delivery to codex-1 failed: pane unavailable'))).toBe(true)
+      expect(team.agents[0].status).toBe('failed')
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('marks an agent failed when normal team message delivery finds no agent', async () => {
+    const team = makeTeam({ agents: [makeTeam().agents[0]] })
+    const { mod, mocks } = await setupWorktreeService(team)
+    const error = new Error('pane unavailable')
+    error.name = 'AgentNotRunningError'
+    mocks.runtime.pasteFromFile.mockRejectedValue(error)
+
+    await mod.sendTeamMessage(team.id, 'team', 'continue')
+
+    expect(team.agents[0].status).toBe('failed')
+    expect(mocks.markAgentFailed).toHaveBeenCalledWith(team.id, 'codex-1')
   })
 
   it.each([undefined, 'implement'])('builds an independent solo prompt (template=%s)', async (templateName) => {
@@ -1023,7 +1072,7 @@ describe('staged workflow integration', () => {
   async function setupStagedService(team: EnsembleTeam) {
     const runtime = {
       capturePane: vi.fn(async () => '>'),
-      sendKeys: vi.fn(async () => {}),
+      sendKeys: vi.fn<AgentRuntime['sendKeys']>(async () => {}),
       pasteFromFile: vi.fn(async () => {}),
     }
     const runStagedWorkflow = vi.fn(async () => {})
@@ -1035,6 +1084,7 @@ describe('staged workflow integration', () => {
       loadTeams: vi.fn(() => []),
       appendMessage: vi.fn(),
       getMessages: vi.fn(() => []),
+      markAgentFailed: vi.fn(),
     }))
     vi.doMock('../lib/agent-spawner', () => ({
       spawnLocalAgent: vi.fn(async ({ name, program, workingDirectory, hostId }) => ({
@@ -1281,6 +1331,7 @@ describe('cleanupStaleTeams stopt achtergebleven processen', () => {
       loadTeams: vi.fn(() => [team]),
       appendMessage: vi.fn(),
       getMessages: vi.fn(() => []),
+      markAgentFailed: vi.fn(),
     }))
     vi.doMock('../lib/agent-spawner', () => ({
       spawnLocalAgent: vi.fn(),

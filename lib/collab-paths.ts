@@ -82,6 +82,8 @@ export function collabFinishedMarker(teamId: string): string {
 /** Ensure the runtime directory (and subdirs) exist */
 export function ensureCollabDirs(teamId: string): void {
   const base = collabRuntimeDir(teamId)
+  fs.mkdirSync(base, { recursive: true, mode: 0o700 })
   fs.mkdirSync(path.join(base, 'prompts'), { recursive: true })
   fs.mkdirSync(path.join(base, 'delivery'), { recursive: true })
+  fs.chmodSync(base, 0o700)
 }

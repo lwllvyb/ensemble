@@ -23,11 +23,13 @@ set -uo pipefail
 
 API="${ENSEMBLE_URL:-http://localhost:23000}"
 SERVICE_MAX_AGE_HOURS="${COLLAB_SERVICE_MAX_AGE:-24}"
-# Vast pad, gedeeld door elke launch: twee starts binnen een seconde kunnen
-# zo elkaars auto-fallback-aanbeveling lezen. De default blijft hetzelfde
-# (gedocumenteerd gedrag), maar een aanroeper die isolatie wil kan er nu
-# COLLAB_OVERRIDE_FILE overheen zetten.
-OVERRIDE_FILE="${COLLAB_OVERRIDE_FILE:-/tmp/collab-agents-override.txt}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./collab-paths.sh
+source "$SCRIPT_DIR/collab-paths.sh"
+# The default override lives under the shared runtime root. Callers can set
+# COLLAB_OVERRIDE_FILE when they need a separate location.
+OVERRIDE_FILE="${COLLAB_OVERRIDE_FILE:-$(collab_runtime_root)/collab-agents-override.txt}"
+mkdir -p "$(dirname "$OVERRIDE_FILE")"
 
 # ─── Which agents does this run need? ───
 # Only an argument is an explicit choice. COLLAB_AGENTS is a standing default
@@ -70,7 +72,6 @@ echo -e "${BD}collab preflight${R}"
 
 # Optional provider health runs before expensive CLI probes. The shared reader
 # handles configuration and environment precedence; broken hooks fail open.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HEALTH_AGENTS=""
 HEALTH_CMD_ENV="${ENSEMBLE_HEALTH_CMD:-}"
 HEALTH_CMD_ENV="${HEALTH_CMD_ENV#"${HEALTH_CMD_ENV%%[![:space:]]*}"}"

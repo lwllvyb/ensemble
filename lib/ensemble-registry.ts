@@ -28,15 +28,43 @@ function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
 }
 
+function parseTeamsFile(file: string): EnsembleTeam[] {
+  const teams = JSON.parse(fs.readFileSync(file, 'utf-8'))
+  if (!Array.isArray(teams)) throw new Error('Expected a team array')
+  return teams
+}
+
 function readTeamsFile(): EnsembleTeam[] {
   ensureDir(ENSEMBLE_DIR)
   if (!fs.existsSync(TEAMS_FILE)) return []
-  return JSON.parse(fs.readFileSync(TEAMS_FILE, 'utf-8'))
+  try {
+    return parseTeamsFile(TEAMS_FILE)
+  } catch (error) {
+    console.error('[Ensemble] Cannot read teams.json; trying the last good backup:', error)
+    try {
+      return parseTeamsFile(`${TEAMS_FILE}.bak`)
+    } catch (backupError) {
+      console.error('[Ensemble] No readable team backup; returning an empty list:', backupError)
+      return []
+    }
+  }
+}
+
+function atomicWrite(file: string, content: string): void {
+  const temporary = `${file}.${uuidv4()}.tmp`
+  try {
+    fs.writeFileSync(temporary, content)
+    fs.renameSync(temporary, file)
+  } finally {
+    fs.rmSync(temporary, { force: true })
+  }
 }
 
 function writeTeamsFile(teams: EnsembleTeam[]): void {
   ensureDir(ENSEMBLE_DIR)
-  fs.writeFileSync(TEAMS_FILE, JSON.stringify(teams, null, 2))
+  const content = JSON.stringify(teams, null, 2)
+  atomicWrite(TEAMS_FILE, content)
+  atomicWrite(`${TEAMS_FILE}.bak`, content)
 }
 
 function acquireTeamsLock(): () => void {
@@ -132,12 +160,24 @@ export function updateTeam(id: string, updates: Partial<EnsembleTeam>): Ensemble
   })
 }
 
+export function markAgentFailed(teamId: string, agentName: string): void {
+  withTeamsLock(() => {
+    const teams = readTeamsFile()
+    const agent = teams.find(team => team.id === teamId)?.agents.find(candidate => candidate.name === agentName)
+    if (!agent || agent.status === 'failed') return
+    agent.status = 'failed'
+    writeTeamsFile(teams)
+  })
+}
+
 export function appendMessage(teamId: string, message: EnsembleMessage): void {
   const dir = path.join(MESSAGES_DIR, teamId)
   ensureDir(dir)
   const file = path.join(dir, 'feed.jsonl')
   fs.appendFileSync(file, JSON.stringify(message) + '\n')
 }
+
+const warnedMessageFiles = new Set<string>()
 
 export function getMessages(teamId: string, since?: string): EnsembleMessage[] {
   const sources = [
@@ -152,7 +192,17 @@ export function getMessages(teamId: string, since?: string): EnsembleMessage[] {
     if (!fs.existsSync(file)) continue
     const lines = fs.readFileSync(file, 'utf-8').trim().split('\n').filter(Boolean)
     for (const line of lines) {
-      const msg = JSON.parse(line) as EnsembleMessage
+      let msg: EnsembleMessage
+      try {
+        msg = JSON.parse(line) as EnsembleMessage
+        if (!msg || typeof msg.content !== 'string') throw new Error('Invalid message record')
+      } catch {
+        if (!warnedMessageFiles.has(file)) {
+          console.warn(`[Ensemble] Skipping corrupt JSONL records in ${file}`)
+          warnedMessageFiles.add(file)
+        }
+        continue
+      }
       const dedupeKey = msg.id || `${msg.from}:${msg.timestamp}:${msg.content?.slice(0, 50)}`
       if (!seenIds.has(dedupeKey)) {
         seenIds.add(dedupeKey)

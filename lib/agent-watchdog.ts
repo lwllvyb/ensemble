@@ -48,6 +48,7 @@ interface AgentWatchdogState {
 
 interface AgentWatchdogDeps {
   loadTeams: () => EnsembleTeam[]
+  markAgentFailed?: (teamId: string, agentName: string) => void
   getMessages: (teamId: string) => EnsembleMessage[]
   appendMessage: (teamId: string, message: EnsembleMessage) => void
   getRuntime: () => Pick<AgentRuntime, 'sendKeys' | 'pasteFromFile'>
@@ -119,7 +120,11 @@ export class AgentWatchdog {
     }
 
     for (const team of activeTeams) {
-      await this.pollTeam(team)
+      try {
+        await this.pollTeam(team)
+      } catch (err) {
+        console.error(`[Watchdog] Poll failed for team ${team.id}:`, err)
+      }
     }
   }
 
@@ -205,6 +210,13 @@ export class AgentWatchdog {
           const reason = err instanceof Error ? err.message : String(err)
           const failedNudges = (currentState.failedNudges ?? 0) + 1
           const givingUp = failedNudges >= this.maxFailedNudges
+
+          if (givingUp) {
+            // Keep the roster truthful. Failed agents must not block sentinel
+            // completion or idle fallback for the agents that remain alive.
+            agent.status = 'failed'
+            this.deps.markAgentFailed?.(team.id, agent.name)
+          }
 
           this.state.set(stateKey, {
             ...currentState,
