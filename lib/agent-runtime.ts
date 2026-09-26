@@ -11,6 +11,8 @@
 import { exec, execFile, execFileSync as nodeExecFileSync } from 'child_process'
 import { promisify } from 'util'
 
+import { isShellCommand } from './startup-gates'
+
 const execAsync = promisify(exec)
 const execFileAsync = promisify(execFile)
 
@@ -43,9 +45,11 @@ export interface AgentRuntime {
   renameSession(oldName: string, newName: string): Promise<void>
 
   // I/O
-  sendKeys(name: string, keys: string, opts?: { literal?: boolean; enter?: boolean }): Promise<void>
+  sendKeys(name: string, keys: string, opts?: { literal?: boolean; enter?: boolean; agentInput?: boolean }): Promise<void>
   pasteFromFile(name: string, filePath: string): Promise<void>
   capturePane(name: string, lines?: number): Promise<string>
+  /** Name of the process in the pane's foreground ('' when unknown). */
+  getForegroundCommand?(name: string): Promise<string>
 
   // Environment
   setEnvironment(name: string, key: string, value: string): Promise<void>
@@ -53,6 +57,24 @@ export interface AgentRuntime {
 
   // PTY (returns spawn args for node-pty -- runtime doesn't own the PTY)
   getAttachCommand(name: string, socketPath?: string): { command: string; args: string[] }
+}
+
+// ---------------------------------------------------------------------------
+// Shell guard
+// ---------------------------------------------------------------------------
+
+export { isShellCommand }
+
+/**
+ * Agent input (prompts, team messages, nudges) landed in a bare shell when the
+ * agent CLI had exited: the shell then parsed it as a command, and one
+ * apostrophe left the pane stuck on `quote>`. Such input is refused instead.
+ */
+export class AgentNotRunningError extends Error {
+  constructor(sessionName: string, command: string) {
+    super(`${sessionName}: no agent running (shell '${command}' in foreground), input not delivered`)
+    this.name = 'AgentNotRunningError'
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -192,10 +214,11 @@ export class TmuxRuntime implements AgentRuntime {
   async sendKeys(
     name: string,
     keys: string,
-    opts: { literal?: boolean; enter?: boolean } = {}
+    opts: { literal?: boolean; enter?: boolean; agentInput?: boolean } = {}
   ): Promise<void> {
     const sName = this.sanitizeName(name)
-    const { literal = false, enter = false } = opts
+    const { literal = false, enter = false, agentInput = false } = opts
+    if (agentInput) await this.assertAgentInForeground(name)
 
     if (literal) {
       const escaped = keys.replace(/'/g, "'\\''")
@@ -236,6 +259,8 @@ export class TmuxRuntime implements AgentRuntime {
    */
   async pasteFromFile(name: string, filePath: string): Promise<void> {
     const sName = this.sanitizeName(name)
+    // Pasting is only ever used for agent input, never for shell commands.
+    await this.assertAgentInForeground(name)
     const bufName = `orch-${sName}`
     const sPath = filePath.replace(/[^a-zA-Z0-9\-_./~ ]/g, '')
 
@@ -283,6 +308,23 @@ export class TmuxRuntime implements AgentRuntime {
         console.error(`[runtime] Enter naar ${sName} mislukte:`, err)
       }
     }
+  }
+
+  async getForegroundCommand(name: string): Promise<string> {
+    try {
+      const sName = this.sanitizeName(name)
+      const { stdout } = await execAsync(
+        `tmux display-message -t "${sName}" -p "#{pane_current_command}" 2>/dev/null || echo ""`
+      )
+      return stdout.trim()
+    } catch {
+      return ''
+    }
+  }
+
+  private async assertAgentInForeground(name: string): Promise<void> {
+    const command = await this.getForegroundCommand(name)
+    if (isShellCommand(command)) throw new AgentNotRunningError(name, command)
   }
 
   async capturePane(name: string, lines: number = 2000): Promise<string> {

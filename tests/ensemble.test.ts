@@ -823,6 +823,34 @@ describe('worktree isolation lifecycle', () => {
     }
   })
 
+  it('never treats a bare shell as ready and sends no keys into it', async () => {
+    // 26-09-2026: Claude closed on its trust dialog, the zsh prompt showed a
+    // ❯ that matched the ready marker, and the prompt was typed as a command.
+    vi.useFakeTimers()
+    try {
+      const team = makeTeam({ agents: [makeTeam().agents[1]] })
+      const { mod, mocks, appendedMessages } = await setupWorktreeService(team)
+      const runtime = mocks.runtime as typeof mocks.runtime & { getForegroundCommand: (s: string) => Promise<string> }
+      runtime.getForegroundCommand = vi.fn(async () => 'zsh')
+      mocks.runtime.capturePane.mockResolvedValue('Quick safety check:\n❯ No, exit\n  Yes, I trust this folder\n>')
+      const creation = mod.createEnsembleTeam({
+        name: team.name, description: team.description, agents: [{ program: 'claude' }],
+      })
+      await vi.advanceTimersByTimeAsync(20_000)
+      expect((await creation).status).toBe(201)
+      const gateKeys = mocks.runtime.sendKeys.mock.calls.filter(call => call[1] === 'Enter' || call[1] === 'Down')
+      expect(gateKeys).toEqual([])
+      expect(appendedMessages.some(m => /did not signal ready/.test(m.content))).toBe(true)
+      for (const call of mocks.runtime.sendKeys.mock.calls) {
+        if ((call[2] as { literal?: boolean } | undefined)?.literal) {
+          expect(call[2]).toMatchObject({ agentInput: true })
+        }
+      }
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('reports solo prompt delivery failures in the feed', async () => {
     vi.useFakeTimers()
     try {

@@ -201,7 +201,7 @@ export class StagedWorkflowManager {
       return
     }
 
-    await runtime.sendKeys(sessionName, text, { literal: true, enter: true })
+    await runtime.sendKeys(sessionName, text, { literal: true, enter: true, agentInput: true })
   }
 
   private resetCursor(): void {

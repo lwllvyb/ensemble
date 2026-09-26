@@ -18,6 +18,7 @@ import {
 } from '../lib/agent-spawner'
 import { isSelf, getHostById, getSelfHostId } from '../lib/hosts-config'
 import { getRuntime } from '../lib/agent-runtime'
+import { detectLiveGate, isShellCommand } from '../lib/startup-gates'
 import { resolveAgentProgram, resolveAgentProgramDetailed, availableAgentKeys } from '../lib/agent-config'
 import { exportObservation, checkMemoryEndpoint, type MemoryExportResult } from '../lib/memory-export'
 import { AgentWatchdog } from '../lib/agent-watchdog'
@@ -43,6 +44,9 @@ interface ServiceResult<T> {
 }
 
 const IDLE_CHECK_INTERVAL_MS = 15_000
+// How long a freshly typed start command may leave the shell in the foreground
+// before the agent counts as not started (a wrapper script execs quickly).
+const AGENT_START_GRACE_MS = 5_000
 const COMPLETION_SIGNAL_WINDOW_MS = 180_000
 // How long a team must be silent before completion WORDING may end it.
 //
@@ -103,19 +107,6 @@ const CLOSING_PATTERNS = [
 
 // Interactive gates that block agent startup and need an automated response.
 // Debounced: same gate is not re-sent within 3 seconds to avoid key-repeat storms.
-const AUTO_CONFIRM_GATES = [
-  {
-    name: 'trust prompt',
-    pattern: /Do you trust the contents of this directory\?|Quick safety check:|Yes, I trust this folder/i,
-    action: 'enter' as const,
-  },
-  {
-    name: 'bypass permissions warning',
-    pattern: /WARNING: Claude Code running in Bypass Permissions mode/i,
-    action: 'accept-bypass' as const,
-  },
-]
-
 interface CompletionSignal {
   agentName: string
   timestamp: number
@@ -883,12 +874,26 @@ export async function createEnsembleTeam(
               return true
             }
           } else {
+            // A shell in the foreground means the agent CLI is not (or no
+            // longer) running. Its prompt may even contain the ready marker
+            // (❯), so never treat it as ready and never send keys into it.
+            const foreground = runtime.getForegroundCommand
+              ? await runtime.getForegroundCommand(sessionName)
+              : ''
+            if (isShellCommand(foreground)) {
+              if (Date.now() - start >= AGENT_START_GRACE_MS) {
+                console.error(`[Ensemble] ${sessionName}: agent CLI is not running (${foreground} in foreground)`)
+                return false
+              }
+              await new Promise(r => setTimeout(r, 1000))
+              continue
+            }
             const output = await runtime.capturePane(sessionName, 50)
-            const gate = AUTO_CONFIRM_GATES.find(candidate => candidate.pattern.test(output))
+            const gate = detectLiveGate(output)
             if (gate) {
               const now = Date.now()
               if (gate.name !== lastGateName || now - lastGateHandledAt >= 3000) {
-                if (gate.action === 'accept-bypass') {
+                if (gate.keys === 'down-enter') {
                   await runtime.sendKeys(sessionName, 'Down', { enter: true })
                 } else {
                   await runtime.sendKeys(sessionName, 'Enter')
@@ -1019,7 +1024,7 @@ export async function createEnsembleTeam(
                 await runtime.pasteFromFile(sessionName, promptFile)
               } else {
                 const prompt = fs.readFileSync(promptFile, 'utf-8')
-                await runtime.sendKeys(sessionName, prompt, { literal: true, enter: true })
+                await runtime.sendKeys(sessionName, prompt, { literal: true, enter: true, agentInput: true })
               }
               // Claude sometimes shows "[Pasted text" and needs an extra Enter to submit
               if (agent.program.toLowerCase().includes('claude')) {
