@@ -137,10 +137,7 @@ function isCompletionStatement(content: string): boolean {
 const TELEGRAM_BOT_TOKEN = process.env.ENSEMBLE_TELEGRAM_BOT_TOKEN || ''
 const TELEGRAM_CHAT_ID = process.env.ENSEMBLE_TELEGRAM_CHAT_ID || ''
 
-// Optional: helsdingen-alerts hub (2026-04-21: ensemble collab summaries
-// gaan hier doorheen voor centrale dedup + D1-logging). Fallback op de
-// oude directe Telegram curl als ALERT_HUB_SECRET niet gezet is.
-const ALERT_HUB_URL = process.env.ALERT_HUB_URL || 'https://alerts.camviewer.app/ingest/alert'
+// Optional alert hub, enabled by an explicit URL and secret.
 const ALERT_HUB_SECRET = process.env.ALERT_HUB_SECRET || ''
 
 class EnsembleService {
@@ -377,6 +374,18 @@ class EnsembleService {
     )
     if (activeNames.size > 0 && sentinelSenders.size >= activeNames.size) return true
 
+    // Last own sentinels also close a quiet team when status chatter invalidated
+    // the immediate completion path. System messages do not reset agent idle time.
+    const latestAgentMessages = [...activeNames].map(name =>
+      [...messages].reverse().find(message => message.from === name),
+    )
+    if (latestAgentMessages.length > 0 && latestAgentMessages.every(message =>
+      message?.content.trim() === EXPLICIT_DONE_SENTINEL && Number.isFinite(Date.parse(message.timestamp)),
+    )) {
+      const lastAgentTimestamp = Math.max(...latestAgentMessages.map(message => Date.parse(message!.timestamp)))
+      if (Date.now() - lastAgentTimestamp > TWO_SIGNAL_IDLE_THRESHOLD_MS) return true
+    }
+
     // Don't auto-disband until agents have exchanged enough messages
     if (nonEnsembleMessages.length < MIN_MESSAGES_BEFORE_AUTO_DISBAND) return false
 
@@ -491,7 +500,7 @@ function escHtml(s: string): string {
  */
 function postToAlertHub(url: string, secret: string, payload: string): void {
   // Het geheim gaat in de query, want de hub leest het daar en nergens anders
-  // (helsdingen-alerts, src/index.js: url.searchParams.get("key"), anders 403).
+  // (url.searchParams.get("key"), anders 403).
   // Een header lijkt netter maar zou de alerts stil laten wegvallen.
   //
   // Het lek zat dan ook niet in de query zelf maar in het curl-subproces dat
@@ -528,8 +537,8 @@ function sendTelegramSummary(params: {
   // task-slice + now zodat retries niet dubbel posten.
   const teamKey = params.teamId || `${params.task.slice(0, 40).replace(/\\s+/g, '-')}-${Date.now()}`
 
-  // Voorkeur: helsdingen-alerts hub als ALERT_HUB_SECRET gezet is.
-  if (ALERT_HUB_SECRET) {
+  const alertHubUrl = readEnsembleConfig().alertHubUrl
+  if (alertHubUrl && ALERT_HUB_SECRET) {
     const agents = params.agentSummaries
     const agentLine = agents.map(a => `${escHtml(a.name)} (${a.msgs}, ${escHtml(a.tokens)})`).join(' + ')
     const hubBody = [
@@ -545,7 +554,7 @@ function sendTelegramSummary(params: {
       body: hubBody,
     })
 
-    postToAlertHub(ALERT_HUB_URL, ALERT_HUB_SECRET, hubPayload)
+    postToAlertHub(alertHubUrl, ALERT_HUB_SECRET, hubPayload)
     return
   }
 

@@ -13,7 +13,7 @@ function config(value: unknown) {
 }
 it('uses optional defaults when the file is absent', () => {
   vi.stubEnv('ENSEMBLE_CONFIG', path.join(root, 'missing'))
-  expect(readEnsembleConfig()).toEqual({ fallbackOrder: ['codex', 'claude', 'glm', 'grok', 'gemini'], graceMinutes: 3 })
+  expect(readEnsembleConfig()).toEqual({ fallbackOrder: ['codex', 'claude', 'glm', 'grok', 'gemini'], graceMinutes: 3, alertHubUrl: '' })
 })
 it('reads every setting and gives environment values precedence', () => {
   config({ healthCommand: 'check', fallbackOrder: ['glm'], maxTeamMinutes: 40, graceMinutes: 4, taskPreamble: 'Be concise.' })
@@ -23,11 +23,11 @@ it('reads every setting and gives environment values precedence', () => {
   vi.stubEnv('ENSEMBLE_MAX_TEAM_MINUTES', '10')
   vi.stubEnv('ENSEMBLE_GRACE_MINUTES', '0')
   vi.stubEnv('ENSEMBLE_TASK_PREAMBLE', 'Verify results.')
-  expect(readEnsembleConfig()).toEqual({ healthCommand: 'other', fallbackOrder: ['grok', 'gemini'], maxTeamMinutes: 10, graceMinutes: 0, taskPreamble: 'Verify results.' })
+  expect(readEnsembleConfig()).toEqual({ healthCommand: 'other', fallbackOrder: ['grok', 'gemini'], maxTeamMinutes: 10, graceMinutes: 0, taskPreamble: 'Verify results.', alertHubUrl: '' })
 })
 it('ignores invalid settings without disabling valid ones', () => {
-  config({ healthCommand: 42, fallbackOrder: [false], maxTeamMinutes: -1, graceMinutes: 'bad', taskPreamble: 'Keep tests.' })
-  expect(readEnsembleConfig()).toEqual({ fallbackOrder: ['codex', 'claude', 'glm', 'grok', 'gemini'], graceMinutes: 3, taskPreamble: 'Keep tests.' })
+  config({ healthCommand: 42, fallbackOrder: [false], maxTeamMinutes: -1, graceMinutes: 'bad', taskPreamble: 'Keep tests.', alertHubUrl: '' })
+  expect(readEnsembleConfig()).toEqual({ fallbackOrder: ['codex', 'claude', 'glm', 'grok', 'gemini'], graceMinutes: 3, taskPreamble: 'Keep tests.', alertHubUrl: '' })
 })
 it('warns and uses defaults for invalid JSON', () => {
   config({})
@@ -81,4 +81,20 @@ it('keeps TypeScript runtime artifacts under the configured test root', async ()
   vi.resetModules()
   const { collabSummaryFile } = await import('../lib/collab-paths')
   expect(collabSummaryFile('sample')).toBe(path.join(root, 'sample', 'summary.txt'))
+})
+
+it('reads the alert hub URL from file and gives the environment precedence', () => {
+  config({ alertHubUrl: 'https://alerts.example.test/ingest' })
+  expect(readEnsembleConfig().alertHubUrl).toBe('https://alerts.example.test/ingest')
+  vi.stubEnv('ENSEMBLE_ALERT_HUB_URL', ' https://override.example.test/ingest ')
+  expect(readEnsembleConfig().alertHubUrl).toBe('https://override.example.test/ingest')
+})
+it('disables the alert hub with an explicitly empty environment override', () => {
+  config({ alertHubUrl: 'https://alerts.example.test/ingest' })
+  vi.stubEnv('ENSEMBLE_ALERT_HUB_URL', '')
+  expect(readEnsembleConfig().alertHubUrl).toBe('')
+})
+it.each([42, null, '   '])('ignores invalid or blank alert hub configuration %j', alertHubUrl => {
+  config({ alertHubUrl })
+  expect(readEnsembleConfig().alertHubUrl).toBe('')
 })

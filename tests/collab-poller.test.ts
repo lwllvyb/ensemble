@@ -201,6 +201,42 @@ fi
     expect(exitCode).toBe(0)
   })
 
+  it('flushes pending messages before stopping when the service says gone', async () => {
+    const messages = path.join(runtimeDir(teamId), 'messages.jsonl')
+    const feed = path.join(runtimeDir(teamId), 'feed.txt')
+    let gone = false
+    let appended = false
+    const svc = await fakeService(res => {
+      if (gone) {
+        if (!appended) {
+          fs.appendFileSync(messages, '{"from":"ensemble","content":"laatste gone-bericht"}\n')
+          appended = true
+        }
+        res.writeHead(404); res.end('{"error":"Team not found"}')
+      }
+      else { res.writeHead(200); res.end('{"team":{"status":"active"}}') }
+    })
+    closeService = svc.close
+    start(svc.url)
+    await waitFor(() => fs.existsSync(path.join(runtimeDir(teamId), 'poller.pid')), 3000, 'poller up')
+    gone = true
+    await waitFor(() => exited, 3000, 'poller exit on gone')
+    expect(fs.readFileSync(feed, 'utf8')).toContain('laatste gone-bericht')
+  })
+
+  it('flushes pending messages before stopping on a signal', async () => {
+    const messages = path.join(runtimeDir(teamId), 'messages.jsonl')
+    const feed = path.join(runtimeDir(teamId), 'feed.txt')
+    const svc = await fakeService(res => { res.writeHead(200); res.end('{"team":{"status":"active"}}') })
+    closeService = svc.close
+    const proc = start(svc.url)
+    await waitFor(() => fs.existsSync(path.join(runtimeDir(teamId), 'poller.pid')), 3000, 'poller up')
+    fs.appendFileSync(messages, '{"from":"ensemble","content":"laatste signaal-bericht"}\n')
+    proc.kill('SIGTERM')
+    await waitFor(() => exited, 3000, 'poller exit on signal')
+    expect(fs.readFileSync(feed, 'utf8')).toContain('laatste signaal-bericht')
+  })
+
   it('stops when the service reports the team as disbanded', async () => {
     const svc = await fakeService(res => { res.writeHead(200); res.end('{"team":{"status":"disbanded"}}') })
     closeService = svc.close

@@ -17,6 +17,11 @@ beforeEach(async () => {
   vi.stubEnv('ENSEMBLE_DATA_DIR', path.join(root, 'data'))
   vi.stubEnv('ENSEMBLE_MAX_TEAM_MINUTES', '10')
   vi.stubEnv('ENSEMBLE_GRACE_MINUTES', '3')
+  vi.stubEnv('ALERT_HUB_SECRET', 'test-secret')
+  vi.stubEnv('ENSEMBLE_ALERT_HUB_URL', '')
+  vi.stubEnv('ENSEMBLE_TELEGRAM_BOT_TOKEN', '')
+  vi.stubEnv('ENSEMBLE_TELEGRAM_CHAT_ID', '')
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 200 }))
   vi.useFakeTimers()
   vi.setSystemTime(start)
   vi.resetModules()
@@ -51,6 +56,7 @@ beforeEach(async () => {
   messages.push({ id: 'first', teamId: current.id, from: 'alpha', to: 'team', content: 'Analysis in progress', type: 'chat', timestamp: new Date(start).toISOString() })
 })
 afterEach(() => {
+  vi.restoreAllMocks()
   vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllEnvs(); vi.resetModules()
   for (const name of ['ensemble-registry', 'agent-spawner', 'agent-runtime', 'hosts-config', 'agent-watchdog', 'memory-export']) vi.doUnmock(`../lib/${name}`)
   fs.rmSync(root, { recursive: true, force: true })
@@ -170,4 +176,50 @@ it('makes the time limit the primary summary reason even when agents never poste
   expect(summary).not.toContain('RUN FAILED: no agent ever posted a message')
   expect(summary).not.toContain('points at prompt delivery')
   expect(summary).toContain('Messages: 0')
+})
+it('ends an idle all-sentinel team below ten messages despite later system chatter', async () => {
+  const post = (from: string, content: string, seconds: number) => messages.push({
+    id: `idle-${messages.length}`, teamId: current!.id, from, to: 'team', content,
+    type: 'chat', timestamp: new Date(start + seconds * 1000).toISOString(),
+  })
+  post('alpha', '<<COLLAB_DONE>>', 1)
+  post('beta', 'Finished checking; waiting for alpha', 2)
+  post('beta', '<<COLLAB_DONE>>', 3)
+  post('ensemble', 'Watchdog status update', 302)
+  vi.setSystemTime(start + 303_000)
+  await service.checkIdleTeams()
+  expect(current!.status).toBe('active')
+  vi.setSystemTime(start + 303_001)
+  await service.checkIdleTeams()
+  expect(current!.status).toBe('disbanded')
+})
+it('does not use the idle sentinel fallback if an agent posts new content after its sentinel', async () => {
+  messages.push(...[
+    { from: 'alpha', content: '<<COLLAB_DONE>>' },
+    { from: 'beta', content: 'Please check the result' },
+    { from: 'beta', content: '<<COLLAB_DONE>>' },
+    { from: 'alpha', content: 'Investigating a new issue' },
+  ].map((m, i) => ({ ...m, id: `reopen-${i}`, teamId: current!.id, to: 'team', type: 'chat' as const, timestamp: new Date(start + (i + 1) * 1000).toISOString() })))
+  vi.setSystemTime(start + 305_000)
+  await service.checkIdleTeams()
+  expect(current!.status).toBe('active')
+})
+
+it('sends no hub alert when its URL is unconfigured even with a secret', async () => {
+  await service.disbandTeam(current!.id)
+  expect(globalThis.fetch).not.toHaveBeenCalled()
+})
+it.each(['file', 'environment'])('uses the alert hub URL from %s when disbanding', async source => {
+  if (source === 'file') {
+    delete process.env.ENSEMBLE_ALERT_HUB_URL
+    fs.writeFileSync(path.join(root, 'config.json'), JSON.stringify({ alertHubUrl: 'https://alerts.example.test/ingest' }))
+  } else {
+    vi.stubEnv('ENSEMBLE_ALERT_HUB_URL', 'https://alerts.example.test/ingest')
+  }
+  await service.disbandTeam(current!.id)
+  expect(globalThis.fetch).toHaveBeenCalledTimes(1)
+  const [url, options] = vi.mocked(globalThis.fetch).mock.calls[0]
+  expect(String(url)).toBe('https://alerts.example.test/ingest?key=test-secret')
+  expect(options?.method).toBe('POST')
+  expect(JSON.parse(String(options?.body))).toMatchObject({ app: 'ensemble', dedup_key: 'collab-deadline-team' })
 })

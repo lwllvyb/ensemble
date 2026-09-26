@@ -12,7 +12,7 @@ function hook(output: unknown, body?: string) {
   fs.writeFileSync(script, body ?? `process.stdout.write(${JSON.stringify(JSON.stringify(output))})`)
   return `${JSON.stringify(process.execPath)} ${JSON.stringify(script)}`
 }
-const defaults = { fallbackOrder: ['codex', 'claude', 'glm', 'grok', 'gemini'], graceMinutes: 3 }
+const defaults = { fallbackOrder: ['codex', 'claude', 'glm', 'grok', 'gemini'], graceMinutes: 3, alertHubUrl: '' }
 it('does nothing without a hook', async () => {
   expect(await checkAgentHealth(['codex', 'claude'], false, defaults)).toEqual({ warnings: [] })
 })
@@ -66,6 +66,23 @@ it('terminates hook descendants on timeout', async () => {
 it('rejects parseable output when the hook exits unsuccessfully or writes trailing data', async () => {
   const result = await checkAgentHealth(['codex'], true, { ...defaults, healthCommand: hook(null, 'process.stdout.write(JSON.stringify({codex:{status:"ok"}})); setTimeout(() => { process.stdout.write("garbage"); process.exit(2) }, 10)') }, 1000)
   expect(result.agents).toBeUndefined()
+  expect(result.warnings.join(' ')).toContain('Health hook failed')
+})
+
+it('waits briefly for stdout to close after a successful hook exit', async () => {
+  const healthCommand = hook(null, `const { spawn } = require('child_process'); spawn(process.execPath, ['-e', 'setTimeout(() => process.stdout.write(JSON.stringify({codex:{status:"ok"}})), 50)'], { stdio: ['ignore', process.stdout, 'ignore'] }); process.exit(0)`)
+  const result = await checkAgentHealth(['codex'], true, { ...defaults, healthCommand }, 1000)
+  expect(result.agents).toEqual(['codex'])
+  expect(result.warnings).toEqual([])
+})
+
+it('bounds the post-exit stdout drain at 500ms', async () => {
+  const healthCommand = hook(null, `const { spawn } = require('child_process'); spawn(process.execPath, ['-e', 'setTimeout(() => process.stdout.write(JSON.stringify({codex:{status:"ok"}})), 700)'], { stdio: ['ignore', process.stdout, 'ignore'] }); process.exit(0)`)
+  const started = Date.now()
+  const result = await checkAgentHealth(['codex'], true, { ...defaults, healthCommand }, 1500)
+  const elapsed = Date.now() - started
+  expect(elapsed).toBeGreaterThanOrEqual(450)
+  expect(elapsed).toBeLessThan(900)
   expect(result.warnings.join(' ')).toContain('Health hook failed')
 })
 

@@ -79,6 +79,13 @@ it.each([undefined, '', '   ', null])('does not start Node without a usable conf
   expect(result.status, result.output).toBe(0)
   expect(fs.existsSync(path.join(root, 'node-warnings'))).toBe(false)
 })
+
+it('warns clearly when a config exists but python3 is unavailable', () => {
+  fs.writeFileSync(path.join(root, 'config.json'), JSON.stringify({ healthCommand: 'probe' }))
+  fs.rmSync(path.join(bin, 'python3'), { force: true })
+  const result = run({ ENSEMBLE_HEALTH_CMD: ' ' })
+  expect(result.output.match(/python3.*config|config.*python3/gi)).toHaveLength(1)
+})
 it('warns and continues with the normal probes when Node exists but tsx is missing', () => {
   fs.rmSync(path.join(root, 'node_modules'), { recursive: true })
   const result = run()

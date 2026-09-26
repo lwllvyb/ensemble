@@ -110,6 +110,34 @@ describe('AgentWatchdog', () => {
     watchdog.stop()
   })
 
+  it('leaves a finished agent alone even after later team messages', async () => {
+    const watchdog = createWatchdog()
+    messages.push(makeMessage({ content: '<<COLLAB_DONE>>' }))
+    messages.push(makeMessage({ from: 'other-agent', content: 'Still checking' }))
+    try {
+      nowMs += 91_000
+      await watchdog.poll()
+      nowMs += 181_000
+      await watchdog.poll()
+      expect(pasteFromFile).not.toHaveBeenCalled()
+      expect(appended).toEqual([])
+    } finally { watchdog.stop() }
+  })
+
+  it('resumes monitoring when an agent posts content after its sentinel', async () => {
+    const watchdog = createWatchdog()
+    messages.push(makeMessage({ content: '<<COLLAB_DONE>>' }))
+    try {
+      await watchdog.poll()
+      nowMs += 1_000
+      messages.push(makeMessage({ content: 'Reopened the investigation', timestamp: new Date(nowMs).toISOString() }))
+      await watchdog.poll()
+      nowMs += 91_000
+      await watchdog.poll()
+      expect(pasteFromFile).toHaveBeenCalledTimes(1)
+    } finally { watchdog.stop() }
+  })
+
   it('marks an agent stalled when silence continues after the nudge', async () => {
     const watchdog = createWatchdog()
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})

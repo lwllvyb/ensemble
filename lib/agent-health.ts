@@ -21,10 +21,23 @@ export async function checkAgentHealth(requested: string[], explicit: boolean, c
       let output = ''
       let bytes = 0
       let settled = false
+      let exitedSuccessfully = false
+      let stdoutClosed = false
+      let closeTimer: ReturnType<typeof setTimeout> | undefined
+      const resolveOutput = () => {
+        if (settled || !exitedSuccessfully) return
+        settled = true
+        if (closeTimer) clearTimeout(closeTimer)
+        clearTimeout(timer)
+        child.stdout?.destroy()
+        child.stderr?.destroy()
+        resolve(output)
+      }
       const fail = () => {
         if (settled) return
         settled = true
         clearTimeout(timer)
+        if (closeTimer) clearTimeout(closeTimer)
         child.stdout?.destroy()
         child.stderr?.destroy()
         // A hook can launch subprocesses; kill its whole process group.
@@ -35,6 +48,10 @@ export async function checkAgentHealth(requested: string[], explicit: boolean, c
       }
       const timer = setTimeout(fail, timeoutMs)
       child.stdout.setEncoding('utf8')
+      child.stdout.once('close', () => {
+        stdoutClosed = true
+        resolveOutput()
+      })
       child.stdout.on('data', (chunk: string) => {
         bytes += Buffer.byteLength(chunk)
         if (bytes > 1024 * 1024) fail()
@@ -45,11 +62,9 @@ export async function checkAgentHealth(requested: string[], explicit: boolean, c
       child.on('exit', code => {
         if (settled) return
         if (code !== 0) { fail(); return }
-        settled = true
-        clearTimeout(timer)
-        child.stdout?.destroy()
-        child.stderr?.destroy()
-        resolve(output)
+        exitedSuccessfully = true
+        if (stdoutClosed) resolveOutput()
+        else closeTimer = setTimeout(resolveOutput, 500)
       })
     })
     const parsed: unknown = JSON.parse(stdout)

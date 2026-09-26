@@ -86,6 +86,8 @@ except (OSError, ValueError):
     sys.exit(1)
 ' "${ENSEMBLE_CONFIG:-${HOME}/.config/ensemble/config.json}" >/dev/null 2>&1; then
   HAS_HEALTH_CONFIG=1
+elif [ -f "${ENSEMBLE_CONFIG:-${HOME}/.config/ensemble/config.json}" ] && ! command -v python3 > /dev/null 2>&1; then
+  warn "Health config found, but python3 is unavailable; health check skipped"
 fi
 if [ "$HAS_HEALTH_CONFIG" = 1 ] && command -v node > /dev/null 2>&1; then
   if [ -f "$SCRIPT_DIR/../node_modules/tsx/dist/loader.mjs" ]; then

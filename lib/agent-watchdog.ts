@@ -142,6 +142,10 @@ export class AgentWatchdog {
     for (const agent of activeAgents) {
       const stateKey = `${team.id}:${agent.name}`
       const lastAgentMessage = [...messages].reverse().find(message => message.from === agent.name)
+      if (lastAgentMessage?.content.trim() === '<<COLLAB_DONE>>') {
+        this.state.delete(stateKey)
+        continue
+      }
       const lastMessageAt = lastAgentMessage?.timestamp || team.createdAt
       const previousState = this.state.get(stateKey)
 

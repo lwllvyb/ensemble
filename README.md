@@ -191,11 +191,17 @@ Environment variables override file values. Missing or invalid settings use defa
 
 | JSON key | Environment override | Default |
 |---|---|---|
+| `alertHubUrl` | `ENSEMBLE_ALERT_HUB_URL` | Empty (hub alerts disabled) |
 | `healthCommand` | `ENSEMBLE_HEALTH_CMD` | No hook |
 | `fallbackOrder` | `ENSEMBLE_FALLBACK_ORDER` (comma-separated) | `["codex","claude","glm","grok","gemini"]` |
 | `maxTeamMinutes` | `ENSEMBLE_MAX_TEAM_MINUTES` | No time limit |
 | `graceMinutes` | `ENSEMBLE_GRACE_MINUTES` | `3` |
 | `taskPreamble` | `ENSEMBLE_TASK_PREAMBLE` | No preamble |
+
+Set `alertHubUrl` and `ALERT_HUB_SECRET` to enable summary notifications through
+an alert hub. An explicitly empty `ENSEMBLE_ALERT_HUB_URL` disables the hub, even
+when a URL exists in the file. Without a hub, direct Telegram notifications remain
+opt-in through `ENSEMBLE_TELEGRAM_BOT_TOKEN` and `ENSEMBLE_TELEGRAM_CHAT_ID`.
 
 `healthCommand` is a trusted shell command. Preflight appends requested agent keys
 and fallback candidates as separate arguments. It must return a JSON object on stdout:

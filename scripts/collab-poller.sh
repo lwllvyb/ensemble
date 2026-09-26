@@ -66,7 +66,10 @@ TICK=0
 API_FAILURES=0
 while true; do
   flush
-  [ -d "$RUNTIME_DIR" ] || exit 0
+  if [ ! -d "$RUNTIME_DIR" ]; then
+    flush
+    exit 0
+  fi
   if [ -f "$FINISHED_FILE" ]; then
     # The final messages can arrive between the previous count and this marker.
     flush
@@ -77,7 +80,7 @@ while true; do
   if [ "$TICK" -ge "$CHECK_EVERY" ]; then
     TICK=0
     case "$(team_state)" in
-      gone) exit 0 ;;
+      gone) flush; exit 0 ;;
       down)
         API_FAILURES=$((API_FAILURES + 1))
         [ "$API_FAILURES" -ge "$MAX_API_FAILURES" ] && exit 0
@@ -93,6 +96,7 @@ while true; do
   wait "$SLEEP_PID" 2>/dev/null
   if [ "$STOPPEN" -eq 1 ]; then
     kill "$SLEEP_PID" 2>/dev/null || true
+    flush
     echo "[$(basename "$0")] gestopt op signaal" >&2
     exit 0
   fi

@@ -1176,7 +1176,7 @@ describe('alert-hub geheim', () => {
     // Het lek was niet de query-parameter maar het curl-subproces dat de hele
     // URL als argv meekreeg: argv is voor elke andere gebruiker op de machine
     // leesbaar via ps. De hub zelf leest de sleutel uitsluitend uit de query
-    // (helsdingen-alerts, src/index.js), dus die hoort daar te staan; een
+    // dus die hoort daar te staan; een
     // header zou een 403 opleveren en de meldingen stil laten wegvallen.
     //
     // vi.fn().mockRejectedValue() houdt zelf een handler op de promise vast

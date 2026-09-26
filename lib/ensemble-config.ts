@@ -3,6 +3,7 @@ import os from 'os'
 import path from 'path'
 
 export interface EnsembleConfig {
+  alertHubUrl: string
   healthCommand?: string
   fallbackOrder: string[]
   maxTeamMinutes?: number
@@ -32,7 +33,9 @@ export function readEnsembleConfig(): EnsembleConfig {
     }
   }
   const value = (key: string, env: string): unknown => process.env[env]?.trim() ? process.env[env] : file[key]
-  const config: EnsembleConfig = { fallbackOrder: ['codex', 'claude', 'glm', 'grok', 'gemini'], graceMinutes: 3 }
+  const config: EnsembleConfig = { fallbackOrder: ['codex', 'claude', 'glm', 'grok', 'gemini'], graceMinutes: 3, alertHubUrl: '' }
+  const alertHubUrl = process.env.ENSEMBLE_ALERT_HUB_URL ?? file.alertHubUrl
+  if (typeof alertHubUrl === 'string') config.alertHubUrl = alertHubUrl.trim()
   const health = value('healthCommand', 'ENSEMBLE_HEALTH_CMD')
   const preamble = value('taskPreamble', 'ENSEMBLE_TASK_PREAMBLE')
   if (typeof health === 'string' && health.trim()) config.healthCommand = health
