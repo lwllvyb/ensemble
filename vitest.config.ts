@@ -22,7 +22,6 @@ export default defineConfig({
       ENSEMBLE_TELEGRAM_BOT_TOKEN: '',
       ENSEMBLE_TELEGRAM_CHAT_ID: '',
       ALERT_HUB_SECRET: '',
-      ENSEMBLE_ALERT_HUB_URL: '',
     },
   },
 })
