@@ -67,7 +67,11 @@ API_FAILURES=0
 while true; do
   flush
   [ -d "$RUNTIME_DIR" ] || exit 0
-  [ -f "$FINISHED_FILE" ] && exit 0
+  if [ -f "$FINISHED_FILE" ]; then
+    # The final messages can arrive between the previous count and this marker.
+    flush
+    exit 0
+  fi
 
   TICK=$((TICK + 1))
   if [ "$TICK" -ge "$CHECK_EVERY" ]; then

@@ -157,6 +157,31 @@ describe('collab-poller.sh', () => {
     expect(fs.readFileSync(feed, 'utf8')).toContain('codex has left')
   })
 
+  it('flushes the final message when the finished marker arrives during a flush', async () => {
+    const dir = runtimeDir(teamId)
+    const bin = path.join(dir, 'bin')
+    const counted = path.join(dir, 'counted')
+    const release = path.join(dir, 'release')
+    fs.mkdirSync(bin)
+    fs.writeFileSync(path.join(bin, 'wc'), `#!/bin/bash
+/usr/bin/wc "$@"
+if [ ! -f '${counted}' ]; then
+  touch '${counted}'
+  while [ ! -f '${release}' ]; do sleep 0.01; done
+fi
+`, { mode: 0o755 })
+    const svc = await fakeService(res => { res.writeHead(200); res.end('{"team":{"status":"active"}}') })
+    closeService = svc.close
+    start(svc.url, { PATH: `${bin}:${process.env.PATH}` })
+    await waitFor(() => fs.existsSync(counted), 3000, 'empty message count captured')
+    fs.appendFileSync(path.join(dir, 'messages.jsonl'), '{"from":"ensemble","content":"final result"}\n')
+    fs.writeFileSync(path.join(dir, '.finished'), 'done')
+    fs.writeFileSync(release, 'continue')
+    await waitFor(() => exited, 3000, 'poller exit after concurrent finish')
+    expect(fs.existsSync(path.join(dir, 'feed.txt'))).toBe(true)
+    expect(fs.readFileSync(path.join(dir, 'feed.txt'), 'utf8')).toContain('final result')
+  })
+
   it('stops when the runtime directory is gone', async () => {
     const svc = await fakeService(res => { res.writeHead(200); res.end('{"team":{"status":"active"}}') })
     closeService = svc.close
