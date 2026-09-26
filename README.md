@@ -185,7 +185,39 @@ On macOS, you never need `tmux attach` for the monitor.
 
 ## Configuration
 
-Copy `.env.example` to `.env` and adjust as needed. Key variables:
+All team settings are optional. The service and preflight share
+`~/.config/ensemble/config.json`; set `ENSEMBLE_CONFIG` to use another file.
+Environment variables override file values. Missing or invalid settings use defaults.
+
+| JSON key | Environment override | Default |
+|---|---|---|
+| `healthCommand` | `ENSEMBLE_HEALTH_CMD` | No hook |
+| `fallbackOrder` | `ENSEMBLE_FALLBACK_ORDER` (comma-separated) | `["codex","claude","glm","grok","gemini"]` |
+| `maxTeamMinutes` | `ENSEMBLE_MAX_TEAM_MINUTES` | No time limit |
+| `graceMinutes` | `ENSEMBLE_GRACE_MINUTES` | `3` |
+| `taskPreamble` | `ENSEMBLE_TASK_PREAMBLE` | No preamble |
+
+`healthCommand` is a trusted shell command. Preflight appends requested agent keys
+and fallback candidates as separate arguments. It must return a JSON object on stdout:
+
+```json
+{"codex":{"status":"ok","detail":"Ready"},"claude":{"status":"limit","detail":"Quota exhausted"}}
+```
+
+Each status is `ok`, `down`, `limit`, `slow`, or `unknown`; `detail` is optional text.
+Missing agents count as `unknown`. A command failure, invalid JSON, or a 60-second
+timeout warns and continues with the existing checks. Explicitly selected `down` or
+`limit` agents abort with exit code `7`, listing healthy alternatives. For the default
+pair, preflight replaces unavailable agents in `fallbackOrder`, without duplicates;
+no healthy replacement also exits `7`. `slow` and `unknown` only warn.
+
+`maxTeamMinutes` must be positive. At the limit the service asks all agents for a
+final conclusion and the exact `<<COLLAB_DONE>>` sentinel within two minutes.
+It stops the team after `graceMinutes` (nonnegative, measured from the warning),
+preserving the summary and time-limit reason. `taskPreamble` is inserted before
+each team's task in agent startup prompts, including solo and staged teams.
+
+Copy `.env.example` to `.env` and adjust as needed. Key server variables:
 
 | Variable | Default | Description |
 |---|---|---|

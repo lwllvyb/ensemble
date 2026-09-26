@@ -21,7 +21,7 @@ import type { EnsembleTeam } from '../types/ensemble'
 const REPO = process.cwd()
 const POLLER = path.join(REPO, 'scripts/collab-poller.sh')
 const LAUNCH = path.join(REPO, 'scripts/collab-launch.sh')
-const RUNTIME_ROOT = '/tmp/ensemble'
+const RUNTIME_ROOT = path.resolve(process.cwd(), 'tmp/test-runtime')
 
 function newTeamId(): string {
   return `test-poller-${process.pid}-${Math.random().toString(36).slice(2, 8)}`

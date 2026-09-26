@@ -11,6 +11,8 @@ metadata:
 
 **Language rule:** ALWAYS respond in the same language the user used to invoke /collab. If the user writes in English, all your output (status updates, summaries, everything) must be in English. If Dutch, respond in Dutch. Never mix languages.
 
+For a single review, a team is often overkill; use single-agent delegation if available.
+
 Launch a Codex + Claude team. Runtime files are namespaced under `/tmp/ensemble/<TEAM_ID>/`.
 
 ## Script Paths
@@ -136,7 +138,9 @@ the team is live when that exact line is in the output. On exit `3`, run
   service, agent CLI auth, and DNS. Non-zero exit means launch aborted with the fix command
   printed. Do not paper over it with `COLLAB_SKIP_PREFLIGHT=1` unless the user asks.
   Exit codes: `1` service down, `2` service started in an unauthenticated shell (restart it),
-  `3` claude CLI broken, `4` codex CLI broken, `5` DNS/network, `6` grok CLI broken.
+  `3` claude CLI broken, `4` codex CLI broken, `5` DNS/network, `6` grok CLI broken,
+  `7` health hook reports an unavailable requested agent or no healthy fallback.
+  Exit `7` is also returned by the launcher; its message lists healthy alternatives.
 - **Postcheck** is armed automatically and fires ~25s after spawn. It only ever looks at this
   team's own tmux sessions. If an agent is stuck in an error state, or zero messages were
   exchanged in its wait window, it kills the team and writes the diagnosis to

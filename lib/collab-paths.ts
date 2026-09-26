@@ -7,7 +7,7 @@
 import path from 'path'
 import fs from 'fs'
 
-const RUNTIME_ROOT = '/tmp/ensemble'
+const RUNTIME_ROOT = process.env.COLLAB_RUNTIME_ROOT?.trim() || '/tmp/ensemble'
 
 /** Base runtime directory for a team */
 export function collabRuntimeDir(teamId: string): string {

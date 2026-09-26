@@ -1,0 +1,49 @@
+import fs from 'fs'
+import path from 'path'
+import { execFileSync, spawnSync } from 'child_process'
+import { afterAll, expect, it } from 'vitest'
+
+const root = fs.mkdtempSync(path.resolve('tmp/preflight-hook-'))
+const preflight = path.resolve('scripts/collab-preflight.sh')
+const node = process.execPath
+for (const tool of ['bash', 'dirname', 'tr']) {
+  fs.symlinkSync(execFileSync('/bin/bash', ['-c', `command -v ${tool}`], { encoding: 'utf8' }).trim(), path.join(root, tool))
+}
+fs.symlinkSync(node, path.join(root, 'node'))
+fs.writeFileSync(path.join(root, 'curl'), '#!/bin/bash\nexit 1\n', { mode: 0o755 })
+afterAll(() => fs.rmSync(root, { recursive: true, force: true }))
+function run(explicit: string, health: unknown) {
+  const file = path.join(root, 'health.cjs')
+  fs.writeFileSync(file, `console.log(${JSON.stringify(JSON.stringify(health))})`)
+  return spawnSync('/bin/bash', [preflight, explicit], { encoding: 'utf8', env: {
+    ...process.env, PATH: root, HOME: root, TMPDIR: root,
+    ENSEMBLE_CONFIG: path.join(root, 'absent'), ENSEMBLE_URL: 'http://unused.invalid',
+    ENSEMBLE_HEALTH_CMD: `${JSON.stringify(node)} ${JSON.stringify(file)}`,
+    COLLAB_AGENTS: '', COLLAB_OVERRIDE_FILE: path.join(root, 'override'),
+  } })
+}
+it('returns exit 7 for an explicitly unavailable agent before other probes', () => {
+  const result = run('gemini', { gemini: { status: 'down' }, glm: { status: 'ok' } })
+  expect(result.status).toBe(7)
+  expect(result.stderr).toContain('Healthy agents: glm')
+})
+it('reports default substitution before checking the service', () => {
+  const result = run('', { codex: { status: 'limit' }, claude: { status: 'ok' }, glm: { status: 'ok' } })
+  expect(result.status).toBe(1)
+  expect(result.stderr).toContain('Auto-fallback: codex -> glm')
+})
+it('warns without blocking unknown status', () => {
+  const result = run('opencode', {})
+  expect(result.status).toBe(1)
+  expect(result.stderr).toContain('opencode: unknown')
+})
+it('persists the full healthy default selection after successful preflight', () => {
+  const python = execFileSync('/bin/bash', ['-c', 'command -v python3'], { encoding: 'utf8' }).trim()
+  fs.writeFileSync(path.join(root, 'python3'), `#!/bin/bash\nif [ "$1" = "-" ]; then exit 0; fi\nexec '${python}' "$@"\n`, { mode: 0o755 })
+  for (const tool of ['seq', 'grep', 'cat']) fs.symlinkSync(execFileSync('/bin/bash', ['-c', `command -v ${tool}`], { encoding: 'utf8' }).trim(), path.join(root, tool))
+  for (const tool of ['tmux', 'sleep', 'rm']) fs.writeFileSync(path.join(root, tool), '#!/bin/bash\nexit 0\n', { mode: 0o755 })
+  fs.writeFileSync(path.join(root, 'curl'), '#!/bin/bash\necho \'{"credentialStore":"readable","uptimeSeconds":1}\'\n', { mode: 0o755 })
+  const result = run('', { codex: { status: 'down' }, claude: { status: 'limit' }, glm: { status: 'ok' }, grok: { status: 'down' }, gemini: { status: 'ok' } })
+  expect(result.status, result.stdout + result.stderr).toBe(0)
+  expect(fs.readFileSync(path.join(root, 'override'), 'utf8').trim()).toBe('glm,gemini')
+})

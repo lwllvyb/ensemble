@@ -32,6 +32,7 @@ import { fileURLToPath } from 'url'
 import { spawn, execFileSync } from 'child_process'
 import { createWorktree, mergeWorktree, destroyWorktree, type WorktreeInfo } from '../lib/worktree-manager'
 import { runStagedWorkflow } from '../lib/staged-workflow'
+import { readEnsembleConfig } from '../lib/ensemble-config'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -144,6 +145,7 @@ const ALERT_HUB_SECRET = process.env.ALERT_HUB_SECRET || ''
 
 class EnsembleService {
   private readonly disbandingTeams = new Set<string>()
+  private readonly deadlineWarnings = new Map<string, number>()
   private readonly idleCheckTimer: NodeJS.Timeout
   private readonly watchdog: AgentWatchdog
 
@@ -275,8 +277,46 @@ class EnsembleService {
   async checkIdleTeams(): Promise<void> {
     const teams = loadTeams().filter(team => team.status === 'active')
 
+    const activeIds = new Set(teams.map(team => team.id))
+    for (const id of this.deadlineWarnings.keys()) {
+      if (!activeIds.has(id)) this.deadlineWarnings.delete(id)
+    }
+    const config = readEnsembleConfig()
     for (const team of teams) {
       if (this.disbandingTeams.has(team.id)) continue
+      if (config.maxTeamMinutes !== undefined) {
+        const ageMs = Date.now() - new Date(team.createdAt).getTime()
+        const deadlineMs = config.maxTeamMinutes * 60_000
+        const graceMs = config.graceMinutes * 60_000
+        if (ageMs >= deadlineMs) {
+          let warningAt = this.deadlineWarnings.get(team.id)
+          if (warningAt === undefined) {
+            warningAt = Date.now()
+            this.deadlineWarnings.set(team.id, warningAt)
+            await sendTeamMessage(team.id, 'team',
+              'Time is up: send your final conclusion and then an exact <<COLLAB_DONE>> message within 2 minutes.',
+              'ensemble')
+          }
+          if (Date.now() >= warningAt + graceMs) {
+            this.disbandingTeams.add(team.id)
+            try {
+              const reason = `team stopped on time limit after ${formatDuration(ageMs)}`
+              appendMessage(team.id, {
+                id: uuidv4(), teamId: team.id, from: 'ensemble', to: 'team',
+                content: `Team ended after maximum runtime (${config.maxTeamMinutes} minutes) and grace period`,
+                type: 'chat', timestamp: new Date().toISOString(),
+              })
+              await disbandTeam(team.id, reason)
+            } catch (error) {
+              console.error(`[Ensemble] Time-limit disband failed for ${team.id}:`, error)
+            } finally {
+              this.disbandingTeams.delete(team.id)
+              this.deadlineWarnings.delete(team.id)
+            }
+            continue
+          }
+        }
+      }
       if (!this.shouldAutoDisband(team)) continue
 
       this.disbandingTeams.add(team.id)
@@ -298,6 +338,7 @@ class EnsembleService {
         console.error(`[Ensemble] Auto-disband failed for ${team.id}:`, err)
       } finally {
         this.disbandingTeams.delete(team.id)
+        this.deadlineWarnings.delete(team.id)
       }
     }
   }
@@ -345,7 +386,7 @@ class EnsembleService {
       .sort((a, b) => a.timestamp - b.timestamp)
 
     // Wording alone never ends a live session. Agents say "klaar" about a
-    // sub-step, and the closure proposal the prompt asks for in rule 7 ("I think
+    // sub-step, and even a tentative closure proposal ("I think
     // we're done because X") is itself a match. Killing on that costs a trio its
     // third agent mid-task. The exact sentinel above is the fast path; these
     // patterns are only a safety net for teams that go quiet without sending it.
@@ -564,6 +605,7 @@ export function buildPromptPreview(params: {
   agentIndex: number
   templateName?: string
 }): string {
+  const taskPreamble = readEnsembleConfig().taskPreamble
   const template = loadCollabTemplate(params.templateName)
   const scriptsDir = path.join(__dirname, '..', 'scripts')
   // Everyone reads the same feed regardless of the `to` field, so with more than
@@ -575,6 +617,7 @@ export function buildPromptPreview(params: {
   if (params.teammateNames.length === 0) {
     return [
       `You are ${params.agentName}, the only agent in team "${params.teamName}".`,
+      ...(taskPreamble ? [`Task preamble: ${taskPreamble}`] : []),
       `Task: ${params.description}`,
       `You own the entire task: planning, implementation or analysis, verification, and reporting.`,
       `COMMUNICATION RULES:`,
@@ -629,6 +672,7 @@ export function buildPromptPreview(params: {
 
   return [
     `You are ${params.agentName} in team "${params.teamName}" with ${mateWord} ${mateList}.`,
+    ...(taskPreamble ? [`Task preamble: ${taskPreamble}`] : []),
     `Task: ${params.description}`,
     ...roleInstructions,
     `COMMUNICATION RULES:`,
@@ -639,8 +683,8 @@ export function buildPromptPreview(params: {
     `5. If teammate shared findings, RESPOND to them`,
     `6. Keep alternating: analyze, share, read, respond, analyze`,
     `DONE PROTOCOL (important):`,
-    `7. When you believe the task is fully converged and there is nothing substantive left to say, explicitly propose closure to your ${mateWord} in a normal team-say message ("I think we're done because X — agree?").`,
-    `8. Only once ${solo ? 'your teammate has' : `ALL ${mateCount} of your teammates have`} confirmed agreement, send a FINAL team-say whose message is EXACTLY the sentinel <<COLLAB_DONE>> (nothing else, no quotes, no prose). The team auto-disbands only after all ${agentTotal} agents have sent <<COLLAB_DONE>>, so do not send it prematurely${solo ? '' : ', and do not treat one teammate agreeing as the whole team agreeing'}.`,
+    `7. When your work is complete and there is nothing substantive left to say, report the conclusion and send a FINAL team-say whose message is EXACTLY the sentinel <<COLLAB_DONE>> (nothing else, no quotes, no prose). Do not send status messages without new information, do not wait for an approval that may never come, and do not leave open questions addressed to you unresolved.`,
+    `8. The team auto-disbands only after all ${agentTotal} agents have sent <<COLLAB_DONE>>; keep working until your own conclusion is complete, then send the sentinel.`,
     `9. Before sending <<COLLAB_DONE>>, make sure the important conclusions (recommendation, rationale, build list, layout, decisions) are actually present as long team-say messages in the transcript — that is what the summary will preserve. Do not keep insights only in your head.`,
     `Start NOW: greet your teammate with team-say, then begin.`,
   ].join(' ')
@@ -1177,17 +1221,19 @@ export async function writeDisbandSummary(
   fs.mkdirSync(path.dirname(summaryFile), { recursive: true })
   fs.writeFileSync(
     summaryFile,
-    `Task: ${team.description || 'unknown'}\nDuration: ${duration}\nMessages: ${agentMsgs.length}\nFull transcript: ${transcriptPointer}\n\n${summaryText}`,
+    `Task: ${team.description || 'unknown'}\nDuration: ${duration}\nMessages: ${agentMsgs.length}\nFull transcript: ${transcriptPointer}`
+      + (options.failureReason ? `\nReason: ${options.failureReason}` : '')
+      + `\n\n${summaryText}`,
   )
   console.log(`[Ensemble] Summary written to ${summaryFile}`)
 }
 
-export async function disbandTeam(teamId: string): Promise<ServiceResult<{ team: EnsembleTeam }>> {
+export async function disbandTeam(teamId: string, failureReason?: string): Promise<ServiceResult<{ team: EnsembleTeam }>> {
   const team = getTeam(teamId)
   if (!team) return { error: 'Team not found', status: 404 }
 
   // Write summary before killing sessions so the Claude Code session can present it
-  await writeDisbandSummary(teamId)
+  await writeDisbandSummary(teamId, failureReason ? { failureReason } : {})
 
   // Scrape token usage BEFORE killing sessions (tmux panes disappear on kill)
   const tokenUsageMap: Record<string, string> = {}

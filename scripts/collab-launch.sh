@@ -40,12 +40,6 @@ TEMPLATE="${4:-${COLLAB_TEMPLATE:-}}"
 # regelen, in plaats van dit met elke andere launch te delen.
 # Only kicks in if caller didn't specify AGENTS explicitly.
 OVERRIDE_FILE="${COLLAB_OVERRIDE_FILE:-/tmp/collab-agents-override.txt}"
-if [ -z "$AGENTS" ] && [ -f "$OVERRIDE_FILE" ]; then
-  AGENTS=$(cat "$OVERRIDE_FILE" 2>/dev/null || echo "")
-  if [ -n "$AGENTS" ]; then
-    echo -e "  \033[93m!\033[0m Auto-fallback aktief: agents=$AGENTS (zie preflight)"
-  fi
-fi
 API="${ENSEMBLE_URL:-http://localhost:23000}"
 HOST_ID="${ENSEMBLE_HOST_ID:-local}"
 
@@ -79,10 +73,21 @@ fi
 # Skip with COLLAB_SKIP_PREFLIGHT=1 if needed.
 # Pass the requested agents so preflight only checks the CLIs this run needs.
 if [ "${COLLAB_SKIP_PREFLIGHT:-0}" != "1" ]; then
-  if ! "$SCRIPT_DIR/collab-preflight.sh" "$AGENTS" 2>&1 | sed 's/^/  /'; then
+  if "$SCRIPT_DIR/collab-preflight.sh" "$AGENTS" 2>&1 | sed 's/^/  /'; then
+    :
+  else
+    PREFLIGHT_EXIT=${PIPESTATUS[0]}
     echo -e "\n  ${R}\033[91m✗${R} Preflight FAILED — fix above issues then re-run."
     echo -e "  ${D}(bypass with COLLAB_SKIP_PREFLIGHT=1, but agents will likely fail)${R}"
+    if [ "$PREFLIGHT_EXIT" = "7" ]; then exit 7; fi
     exit 1
+  fi
+fi
+
+if [ -z "$AGENTS" ] && [ -f "$OVERRIDE_FILE" ]; then
+  AGENTS=$(cat "$OVERRIDE_FILE" 2>/dev/null || echo "")
+  if [ -n "$AGENTS" ]; then
+    echo -e "  \033[93m!\033[0m Auto-fallback aktief: agents=$AGENTS (zie preflight)"
   fi
 fi
 

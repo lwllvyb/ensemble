@@ -1,3 +1,4 @@
+import path from 'path'
 /**
  * Regression test for the watchdog runaway.
  *
@@ -57,7 +58,7 @@ function harness(agentNames: string[]) {
     isSelf: () => true,
     getHostById: () => undefined,
     postRemoteSessionCommand: async () => {},
-    collabDeliveryFile: (_teamId, sessionName) => `/tmp/ensemble-test/${sessionName}.txt`,
+    collabDeliveryFile: (_teamId, sessionName) => path.resolve('tmp/watchdog-runaway', `${sessionName}.txt`),
     onTeamUnreachable: (teamId, reason) => { unreachable.push(`${teamId}: ${reason}`) },
     now: () => now,
     nudgeAfterMs: 1,
@@ -103,7 +104,7 @@ function answeringHarness(agentNames: string[], maxNudges?: number) {
     isSelf: () => true,
     getHostById: () => undefined,
     postRemoteSessionCommand: async () => {},
-    collabDeliveryFile: (_teamId, sessionName) => `/tmp/ensemble-test/${sessionName}.txt`,
+    collabDeliveryFile: (_teamId, sessionName) => path.resolve('tmp/watchdog-runaway', `${sessionName}.txt`),
     now: () => now,
     nudgeAfterMs: 90_000,
     stallAfterMs: 180_000,

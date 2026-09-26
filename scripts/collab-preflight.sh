@@ -15,6 +15,7 @@
 #   4 — codex CLI broken (auth or binary issue)
 #   5 — DNS/network issue
 #   6 — grok CLI broken (auth or binary issue)
+#   7 - health hook reports unavailable requested agents or no healthy replacement
 #
 # Each failure prints exactly what's wrong + the fix command.
 
@@ -63,6 +64,24 @@ warn() {
 }
 
 echo -e "${BD}collab preflight${R}"
+
+# Optional provider health runs before expensive CLI probes. The shared reader
+# handles configuration and environment precedence; broken hooks fail open.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HEALTH_AGENTS=""
+if command -v node > /dev/null 2>&1; then
+  HEALTH_AGENTS=$(node --import "$SCRIPT_DIR/../node_modules/tsx/dist/loader.mjs" "$SCRIPT_DIR/agent-health.ts" "$REQUESTED_AGENTS" "$EXPLICIT_AGENTS")
+  HEALTH_EXIT=$?
+  if [ "$HEALTH_EXIT" = "7" ]; then exit 7; fi
+  if [ "$HEALTH_EXIT" != "0" ]; then
+    warn "Health hook helper failed; continuing with existing preflight checks"
+    HEALTH_AGENTS=""
+  fi
+fi
+if [ -n "$HEALTH_AGENTS" ]; then
+  REQUESTED_AGENTS="$HEALTH_AGENTS"
+  REQUESTED_LC="$HEALTH_AGENTS"
+fi
 
 # ─── 1. Ensemble service ───
 if ! curl -sf "$API/api/v1/health" > /dev/null 2>&1; then
@@ -487,6 +506,21 @@ fi
 CODEX_DEAD="${CODEX_DEAD:-0}"
 CLAUDE_DEAD="${CLAUDE_DEAD:-0}"
 GROK_DEAD="${GROK_DEAD:-0}"
+
+# A valid health selection keeps its full composition through to launch.
+if [ -n "$HEALTH_AGENTS" ]; then
+  if [ "$CODEX_DEAD" = "1" ] || [ "$CLAUDE_DEAD" = "1" ] || [ "$GROK_DEAD" = "1" ]; then
+    rm -f "$OVERRIDE_FILE"
+    fail 3 "A selected agent failed the CLI checks above: $REQUESTED_AGENTS"
+  fi
+  if [ "$EXPLICIT_AGENTS" = "0" ]; then
+    printf '%s\n' "$HEALTH_AGENTS" > "$OVERRIDE_FILE"
+  else
+    rm -f "$OVERRIDE_FILE"
+  fi
+  echo -e "  ${GRN}${BD}All preflight checks passed${R}"
+  exit 0
+fi
 
 # When the caller named its agents explicitly, never silently swap in a different
 # one: the user asked for these agents, so a dead one is a hard failure they need

@@ -7,7 +7,8 @@ import type { EnsembleMessage, EnsembleTeam, StagedWorkflowConfig } from '../typ
 import { __testing } from '../services/ensemble-service'
 
 const TEAM_SAY_BIN = path.resolve(process.cwd(), 'scripts/team-say.sh')
-const TMP_ENSEMBLE_DIR = '/tmp/ensemble'
+const TMP_ENSEMBLE_DIR = path.resolve(process.cwd(), 'tmp/test-runtime')
+const SCRIPT_ENV = { ...process.env, COLLAB_RUNTIME_ROOT: TMP_ENSEMBLE_DIR }
 
 function makeMessage(overrides: Partial<EnsembleMessage> = {}): EnsembleMessage {
   return {
@@ -558,7 +559,7 @@ describe('team-say — output format', () => {
   })
 
   it('writes valid JSONL to /tmp/ensemble/<teamId>/messages.jsonl', () => {
-    execFileSync(TEAM_SAY_BIN, [testTeamId, 'codex-1', 'claude-2', 'hello'])
+    execFileSync(TEAM_SAY_BIN, [testTeamId, 'codex-1', 'claude-2', 'hello'], { env: SCRIPT_ENV })
     expect(fs.existsSync(outputFile)).toBe(true)
 
     const line = fs.readFileSync(outputFile, 'utf-8').trim()
@@ -566,7 +567,7 @@ describe('team-say — output format', () => {
   })
 
   it('message contains all required EnsembleMessage fields', () => {
-    execFileSync(TEAM_SAY_BIN, [testTeamId, 'codex-1', 'claude-2', 'field check'])
+    execFileSync(TEAM_SAY_BIN, [testTeamId, 'codex-1', 'claude-2', 'field check'], { env: SCRIPT_ENV })
     const msg = JSON.parse(fs.readFileSync(outputFile, 'utf-8').trim())
 
     expect(msg).toMatchObject({
@@ -581,14 +582,14 @@ describe('team-say — output format', () => {
   })
 
   it('id is a valid UUID v4', () => {
-    execFileSync(TEAM_SAY_BIN, [testTeamId, 'codex-1', 'claude-2', 'uuid test'])
+    execFileSync(TEAM_SAY_BIN, [testTeamId, 'codex-1', 'claude-2', 'uuid test'], { env: SCRIPT_ENV })
     const msg = JSON.parse(fs.readFileSync(outputFile, 'utf-8').trim())
     const uuidV4Regex = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
     expect(msg.id).toMatch(uuidV4Regex)
   })
 
   it('timestamp is a valid, recent ISO 8601 string', () => {
-    execFileSync(TEAM_SAY_BIN, [testTeamId, 'codex-1', 'claude-2', 'ts test'])
+    execFileSync(TEAM_SAY_BIN, [testTeamId, 'codex-1', 'claude-2', 'ts test'], { env: SCRIPT_ENV })
     const msg = JSON.parse(fs.readFileSync(outputFile, 'utf-8').trim())
     const parsed = new Date(msg.timestamp)
     expect(Number.isNaN(parsed.getTime())).toBe(false)
@@ -596,13 +597,13 @@ describe('team-say — output format', () => {
   })
 
   it('preserves multi-word content', () => {
-    execFileSync(TEAM_SAY_BIN, [testTeamId, 'codex-1', 'claude-2', 'bericht met spaties'])
+    execFileSync(TEAM_SAY_BIN, [testTeamId, 'codex-1', 'claude-2', 'bericht met spaties'], { env: SCRIPT_ENV })
     const msg = JSON.parse(fs.readFileSync(outputFile, 'utf-8').trim())
     expect(msg.content).toBe('bericht met spaties')
   })
 
   it('handles special characters in message', () => {
-    execFileSync(TEAM_SAY_BIN, [testTeamId, 'codex-1', 'claude-2', 'Hello "world" & <test>'])
+    execFileSync(TEAM_SAY_BIN, [testTeamId, 'codex-1', 'claude-2', 'Hello "world" & <test>'], { env: SCRIPT_ENV })
     const msg = JSON.parse(fs.readFileSync(outputFile, 'utf-8').trim())
     expect(msg.content).toContain('"world"')
     expect(msg.content).toContain('&')
@@ -610,8 +611,8 @@ describe('team-say — output format', () => {
   })
 
   it('appends multiple messages with unique ids', () => {
-    execFileSync(TEAM_SAY_BIN, [testTeamId, 'codex-1', 'claude-2', 'First'])
-    execFileSync(TEAM_SAY_BIN, [testTeamId, 'codex-1', 'claude-2', 'Second'])
+    execFileSync(TEAM_SAY_BIN, [testTeamId, 'codex-1', 'claude-2', 'First'], { env: SCRIPT_ENV })
+    execFileSync(TEAM_SAY_BIN, [testTeamId, 'codex-1', 'claude-2', 'Second'], { env: SCRIPT_ENV })
 
     const lines = fs.readFileSync(outputFile, 'utf-8').trim().split('\n')
     expect(lines).toHaveLength(2)
@@ -1066,6 +1067,7 @@ describe('staged workflow integration', () => {
   }
 
   it('uses staged workflow instead of normal prompt injection when staged=true', async () => {
+    vi.stubEnv('ENSEMBLE_TASK_PREAMBLE', 'Use project conventions.')
     const team = makeTeam({
       id: 'team-staged',
       name: 'team-staged',
@@ -1097,7 +1099,13 @@ describe('staged workflow integration', () => {
         buildVerifyPrompt: expect.any(Function),
       }),
     )
+    const workflow = await import('../lib/staged-workflow')
+    const builders = vi.mocked(workflow.runStagedWorkflow).mock.calls[0][2]!
+    const prompt = builders.buildPlanPrompt!({ agent: team.agents[0], teammates: ['claude-2'], index: 0 })
+    expect(prompt).toContain('Use project conventions.')
+    expect(prompt.indexOf('Use project conventions.')).toBeLessThan(prompt.indexOf('Task:'))
     expect(runtime.sendKeys).not.toHaveBeenCalled()
+    vi.unstubAllEnvs()
   })
 
   it('keeps normal prompt injection when staged=false', async () => {
