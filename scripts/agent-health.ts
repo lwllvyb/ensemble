@@ -10,3 +10,4 @@ if (result.blocked?.length) {
 } else if (result.agents) {
   console.log(result.agents.join(','))
 }
+process.exit(process.exitCode ?? 0)

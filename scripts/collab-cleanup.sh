@@ -21,7 +21,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./collab-paths.sh
 source "$SCRIPT_DIR/collab-paths.sh"
 
-ENSEMBLE_ROOT="${COLLAB_RUNTIME_ROOT:-/tmp/ensemble}"
+ENSEMBLE_ROOT="$(collab_runtime_root)"
 KEEP_RECENT=3
 MIN_AGE_SECONDS=$((24 * 60 * 60))
 MODE="dry-run"

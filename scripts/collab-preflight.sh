@@ -69,13 +69,35 @@ echo -e "${BD}collab preflight${R}"
 # handles configuration and environment precedence; broken hooks fail open.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HEALTH_AGENTS=""
-if command -v node > /dev/null 2>&1; then
-  HEALTH_AGENTS=$(node --import "$SCRIPT_DIR/../node_modules/tsx/dist/loader.mjs" "$SCRIPT_DIR/agent-health.ts" "$REQUESTED_AGENTS" "$EXPLICIT_AGENTS")
-  HEALTH_EXIT=$?
-  if [ "$HEALTH_EXIT" = "7" ]; then exit 7; fi
-  if [ "$HEALTH_EXIT" != "0" ]; then
-    warn "Health hook helper failed; continuing with existing preflight checks"
-    HEALTH_AGENTS=""
+HEALTH_CMD_ENV="${ENSEMBLE_HEALTH_CMD:-}"
+HEALTH_CMD_ENV="${HEALTH_CMD_ENV#"${HEALTH_CMD_ENV%%[![:space:]]*}"}"
+HEALTH_CMD_ENV="${HEALTH_CMD_ENV%"${HEALTH_CMD_ENV##*[![:space:]]}"}"
+HAS_HEALTH_CONFIG=0
+if [ -n "$HEALTH_CMD_ENV" ]; then
+  HAS_HEALTH_CONFIG=1
+elif [ -f "${ENSEMBLE_CONFIG:-${HOME}/.config/ensemble/config.json}" ] && python3 -c '
+import json, sys
+try:
+    with open(sys.argv[1]) as source:
+        config = json.load(source)
+    command = config.get("healthCommand") if isinstance(config, dict) else None
+    sys.exit(0 if isinstance(command, str) and command.strip() else 1)
+except (OSError, ValueError):
+    sys.exit(1)
+' "${ENSEMBLE_CONFIG:-${HOME}/.config/ensemble/config.json}" >/dev/null 2>&1; then
+  HAS_HEALTH_CONFIG=1
+fi
+if [ "$HAS_HEALTH_CONFIG" = 1 ] && command -v node > /dev/null 2>&1; then
+  if [ -f "$SCRIPT_DIR/../node_modules/tsx/dist/loader.mjs" ]; then
+    HEALTH_AGENTS=$(NODE_NO_WARNINGS=1 node --import "$SCRIPT_DIR/../node_modules/tsx/dist/loader.mjs" "$SCRIPT_DIR/agent-health.ts" "$REQUESTED_AGENTS" "$EXPLICIT_AGENTS")
+    HEALTH_EXIT=$?
+    if [ "$HEALTH_EXIT" = "7" ]; then exit 7; fi
+    if [ "$HEALTH_EXIT" != "0" ]; then
+      warn "Health hook helper failed; continuing with existing preflight checks"
+      HEALTH_AGENTS=""
+    fi
+  else
+    warn "Health hook skipped: node is available but tsx is unavailable; continuing with existing preflight checks"
   fi
 fi
 if [ -n "$HEALTH_AGENTS" ]; then
@@ -507,19 +529,37 @@ CODEX_DEAD="${CODEX_DEAD:-0}"
 CLAUDE_DEAD="${CLAUDE_DEAD:-0}"
 GROK_DEAD="${GROK_DEAD:-0}"
 
-# A valid health selection keeps its full composition through to launch.
-if [ -n "$HEALTH_AGENTS" ]; then
-  if [ "$CODEX_DEAD" = "1" ] || [ "$CLAUDE_DEAD" = "1" ] || [ "$GROK_DEAD" = "1" ]; then
-    rm -f "$OVERRIDE_FILE"
-    fail 3 "A selected agent failed the CLI checks above: $REQUESTED_AGENTS"
-  fi
-  if [ "$EXPLICIT_AGENTS" = "0" ]; then
+# Keep health-selected agents unless a CLI probe supplies additional down information.
+if [ -n "$HEALTH_AGENTS" ] && [ "$EXPLICIT_AGENTS" = "0" ]; then
+  if [ "$CODEX_DEAD" != "1" ] && [ "$CLAUDE_DEAD" != "1" ] && [ "$GROK_DEAD" != "1" ]; then
     printf '%s\n' "$HEALTH_AGENTS" > "$OVERRIDE_FILE"
-  else
-    rm -f "$OVERRIDE_FILE"
+    echo -e "  ${GRN}${BD}All preflight checks passed${R}"
+    exit 0
   fi
-  echo -e "  ${GRN}${BD}All preflight checks passed${R}"
-  exit 0
+  # The default pair falls through to the original single-agent fallback below.
+  # A substituted selection must never restore an agent excluded by the hook.
+  if [ "$HEALTH_AGENTS" != "codex,claude" ]; then
+    SURVIVORS=""
+    IFS=',' read -r -a HEALTH_KEYS <<< "$HEALTH_AGENTS"
+    for agent in "${HEALTH_KEYS[@]}"; do
+      case "$agent" in
+        *codex*) [ "$CODEX_DEAD" = 1 ] && continue ;;
+        *claude*) [ "$CLAUDE_DEAD" = 1 ] && continue ;;
+        *grok*) [ "$GROK_DEAD" = 1 ] && continue ;;
+      esac
+      SURVIVORS="${SURVIVORS:+$SURVIVORS,}$agent"
+    done
+    if [ -n "$SURVIVORS" ]; then
+      printf '%s\n' "$SURVIVORS" > "$OVERRIDE_FILE"
+      warn "Auto-fallback after CLI probes: $SURVIVORS"
+      echo -e "  ${GRN}${BD}All preflight checks passed${R}"
+      exit 0
+    fi
+    rm -f "$OVERRIDE_FILE"
+    if [ "$CODEX_DEAD" = 1 ]; then fail 4 "Selected codex failed its CLI probe"; fi
+    if [ "$CLAUDE_DEAD" = 1 ]; then fail 3 "Selected claude failed its CLI probe"; fi
+    fail 6 "Selected grok failed its CLI probe"
+  fi
 fi
 
 # When the caller named its agents explicitly, never silently swap in a different
@@ -532,7 +572,10 @@ if [ "$EXPLICIT_AGENTS" = "1" ]; then
   [ "$GROK_DEAD" = "1" ] && DEAD_LIST="$DEAD_LIST grok"
   if [ -n "$DEAD_LIST" ]; then
     rm -f "$OVERRIDE_FILE"
-    fail 3 "Requested agents unavailable:$DEAD_LIST
+    DEAD_EXIT=3
+    if [ "$CODEX_DEAD" = 1 ]; then DEAD_EXIT=4
+    elif [ "$CLAUDE_DEAD" != 1 ] && [ "$GROK_DEAD" = 1 ]; then DEAD_EXIT=6; fi
+    fail "$DEAD_EXIT" "Requested agents unavailable:$DEAD_LIST
      You asked for: $REQUESTED_AGENTS
      Fix the agent above, or relaunch naming different agents."
   fi

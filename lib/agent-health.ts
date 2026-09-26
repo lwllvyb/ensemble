@@ -16,7 +16,7 @@ export async function checkAgentHealth(requested: string[], explicit: boolean, c
     const keys = [...new Set([...requested, ...config.fallbackOrder])]
     const stdout = await new Promise<string>((resolve, reject) => {
       const child = spawn('/bin/bash', ['-c', `${config.healthCommand} "$@"`, 'ensemble-health', ...keys], {
-        detached: true, stdio: ['ignore', 'pipe', 'ignore'],
+        detached: true, stdio: ['ignore', 'pipe', 'pipe'],
       })
       let output = ''
       let bytes = 0
@@ -25,6 +25,8 @@ export async function checkAgentHealth(requested: string[], explicit: boolean, c
         if (settled) return
         settled = true
         clearTimeout(timer)
+        child.stdout?.destroy()
+        child.stderr?.destroy()
         // A hook can launch subprocesses; kill its whole process group.
         if (child.pid) {
           try { process.kill(-child.pid, 'SIGKILL') } catch { /* already exited */ }
@@ -38,12 +40,15 @@ export async function checkAgentHealth(requested: string[], explicit: boolean, c
         if (bytes > 1024 * 1024) fail()
         else output += chunk
       })
+      child.stderr?.resume()
       child.on('error', fail)
-      child.on('close', code => {
+      child.on('exit', code => {
         if (settled) return
         if (code !== 0) { fail(); return }
         settled = true
         clearTimeout(timer)
+        child.stdout?.destroy()
+        child.stderr?.destroy()
         resolve(output)
       })
     })

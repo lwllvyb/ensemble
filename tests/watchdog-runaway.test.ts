@@ -1,4 +1,3 @@
-import path from 'path'
 /**
  * Regression test for the watchdog runaway.
  *
@@ -9,6 +8,7 @@ import path from 'path'
  *
  * Run: npx tsx tests/watchdog-runaway.test.ts
  */
+import path from 'path'
 import { describe, it } from 'vitest'
 import assert from 'node:assert'
 import { AgentWatchdog } from '../lib/agent-watchdog'

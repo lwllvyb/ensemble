@@ -291,10 +291,20 @@ class EnsembleService {
         if (ageMs >= deadlineMs) {
           let warningAt = this.deadlineWarnings.get(team.id)
           if (warningAt === undefined) {
+            const persistedWarning = getMessages(team.id).find(message =>
+              message.from === 'ensemble' && message.content.startsWith('Time is up:') &&
+              Number.isFinite(Date.parse(message.timestamp)),
+            )
+            if (persistedWarning) {
+              warningAt = Date.parse(persistedWarning.timestamp)
+              this.deadlineWarnings.set(team.id, warningAt)
+            }
+          }
+          if (warningAt === undefined) {
             warningAt = Date.now()
             this.deadlineWarnings.set(team.id, warningAt)
             await sendTeamMessage(team.id, 'team',
-              'Time is up: send your final conclusion and then an exact <<COLLAB_DONE>> message within 2 minutes.',
+              `Time is up: send your final conclusion and then an exact <<COLLAB_DONE>> message within ${config.graceMinutes} minutes.`,
               'ensemble')
           }
           if (Date.now() >= warningAt + graceMs) {
@@ -349,15 +359,20 @@ class EnsembleService {
     const lastMessage = nonEnsembleMessages[nonEnsembleMessages.length - 1]
     if (!lastMessage) return false
 
-    // Explicit sentinel path: once EVERY active agent has sent the exact done
-    // sentinel, disband immediately. This bypasses the min-message count and
-    // the idle wait — the agents have explicitly agreed the task is done.
-    // The bar is every agent, not two: in a trio, disbanding on the second
-    // sentinel kills the third agent mid-task.
+    // Every active agent must finish after the latest content from other agents.
+    // Another sentinel is only a completion marker, so it does not reopen work.
     const activeNames = new Set(team.agents.filter(a => a.status === 'active').map(a => a.name))
+    const agentNames = new Set(team.agents.map(a => a.name))
+    const contentMessages = messages.filter(m => agentNames.has(m.from) && m.content.trim() !== EXPLICIT_DONE_SENTINEL)
     const sentinelSenders = new Set(
       messages
         .filter(m => activeNames.has(m.from) && m.content.trim() === EXPLICIT_DONE_SENTINEL)
+        .filter(m => {
+          const sentAt = Date.parse(m.timestamp)
+          return Number.isFinite(sentAt) && contentMessages.every(other =>
+            other.from === m.from || sentAt > Date.parse(other.timestamp),
+          )
+        })
         .map(m => m.from),
     )
     if (activeNames.size > 0 && sentinelSenders.size >= activeNames.size) return true
@@ -631,8 +646,7 @@ export function buildPromptPreview(params: {
     ].join(' ')
   }
 
-  // Wording has to scale past a pair: a trio told "both teammates" will close
-  // the team as soon as one other agent agrees.
+  // Scale teammate wording to the number of agents in the team.
   const mateCount = params.teammateNames.length
   const solo = mateCount === 1
   const mateWord = solo ? 'teammate' : 'teammates'
@@ -683,8 +697,8 @@ export function buildPromptPreview(params: {
     `5. If teammate shared findings, RESPOND to them`,
     `6. Keep alternating: analyze, share, read, respond, analyze`,
     `DONE PROTOCOL (important):`,
-    `7. When your work is complete and there is nothing substantive left to say, report the conclusion and send a FINAL team-say whose message is EXACTLY the sentinel <<COLLAB_DONE>> (nothing else, no quotes, no prose). Do not send status messages without new information, do not wait for an approval that may never come, and do not leave open questions addressed to you unresolved.`,
-    `8. The team auto-disbands only after all ${agentTotal} agents have sent <<COLLAB_DONE>>; keep working until your own conclusion is complete, then send the sentinel.`,
+    `7. When your work is complete and there is no unanswered teammate content or question after your last message, report the conclusion and send a FINAL team-say whose message is EXACTLY the sentinel <<COLLAB_DONE>> (nothing else, no quotes, no prose). Do not send status messages without new information, do not wait for an approval that may never come, and do not leave open questions addressed to you unresolved.`,
+    `8. The team auto-disbands only after all ${agentTotal} agents have sent <<COLLAB_DONE>>. If new teammate content arrives after your sentinel, respond substantively and send the sentinel again once your work is complete and all questions addressed to you are resolved.`,
     `9. Before sending <<COLLAB_DONE>>, make sure the important conclusions (recommendation, rationale, build list, layout, decisions) are actually present as long team-say messages in the transcript — that is what the summary will preserve. Do not keep insights only in your head.`,
     `Start NOW: greet your teammate with team-say, then begin.`,
   ].join(' ')
@@ -1135,6 +1149,7 @@ async function writeFailureSummary(
     .slice(-5)
     .map(m => `  ${m.timestamp?.slice(11, 19) || '--:--:--'}  ${m.content.replace(/\s+/g, ' ').slice(0, 160)}`)
 
+  const stoppedOnTimeLimit = failureReason?.startsWith('team stopped on time limit') ?? false
   const roster = team.agents.map(a => `${a.name} (${a.program}, ${a.status})`).join(', ') || 'none'
   const lines = [
     `Task: ${team.description || 'unknown'}`,
@@ -1142,12 +1157,13 @@ async function writeFailureSummary(
     `Messages: 0`,
     `Full transcript: ${collabMessagesFile(team.id)}`,
     '',
-    'RUN FAILED: no agent ever posted a message.',
+    stoppedOnTimeLimit ? `RUN STOPPED: ${failureReason}` : 'RUN FAILED: no agent ever posted a message.',
     failureReason ? `Reason: ${failureReason}` : '',
     `Agents: ${roster}`,
     '',
     errors.length
       ? `Last ensemble-side errors:\n${errors.join('\n')}`
+      : stoppedOnTimeLimit ? 'No agent messages were recorded before the time limit.'
       : 'No ensemble-side errors were recorded, which points at prompt delivery:\n' +
         `  the agents started but never received their prompt. Retry with:\n` +
         `  scripts/collab-rescue.sh ${team.id}`,

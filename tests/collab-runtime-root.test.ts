@@ -26,6 +26,14 @@ function run(script: string, args: string[]): { out: string; code: number } {
 }
 
 describe('runtime root', () => {
+  it('trimt witruimte rond COLLAB_RUNTIME_ROOT zoals de TypeScript-paden', () => {
+    const trimmed = path.join(root, 'team-trim')
+    const out = execFileSync('/bin/bash', ['-c', `source '${path.resolve(process.cwd(), 'scripts/collab-paths.sh')}'; collab_runtime_dir team-trim`], {
+      env: { ...process.env, COLLAB_RUNTIME_ROOT: `  ${trimmed}  ` }, encoding: 'utf8',
+    })
+    expect(out.trim()).toBe(path.join(trimmed, 'team-trim'))
+  })
+
   // Deze test kijkt naar het PAD in de foutmelding, niet naar de tekst ervan.
   // De eerste versie zocht op "Team not found" terwijl de melding "Team <id> not
   // found at <pad>" is, dus die matchte nooit en was groen voor de fix bestond.
@@ -43,4 +51,12 @@ describe('runtime root', () => {
     const { out } = run(RESCUE, ['team-y'])
     expect(out).toContain('geen sessieregister voor team-y')
   })
+})
+
+it('cleanup resolves the same trimmed runtime root as team scripts', () => {
+  const out = execFileSync('/bin/bash', [path.resolve('scripts/collab-cleanup.sh')], {
+    env: { ...process.env, COLLAB_RUNTIME_ROOT: `  ${root}  ` }, encoding: 'utf8',
+  })
+  expect(out).toContain('No finished or abandoned collabs found')
+  expect(out).not.toContain('No runtime root found')
 })

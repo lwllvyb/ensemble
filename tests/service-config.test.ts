@@ -110,3 +110,64 @@ it('requires new information and no outstanding questions, without an approval l
   expect(prompt).toContain('EXACTLY the sentinel <<COLLAB_DONE>>')
   expect(prompt).not.toContain('confirmed agreement')
 })
+it('invalidates a sentinel when another agent posts new content and requires a fresh sentinel', async () => {
+  const post = (from: string, content: string, seconds: number) => messages.push({
+    id: `review-${messages.length}`, teamId: current!.id, from, to: 'team', content,
+    type: 'chat', timestamp: new Date(start + seconds * 1000).toISOString(),
+  })
+  post('alpha', 'Implementation and verification complete', 1)
+  post('alpha', '<<COLLAB_DONE>>', 2)
+  post('beta', 'The fallback still loses the selected agent. Please fix it.', 3)
+  post('beta', '<<COLLAB_DONE>>', 4)
+  vi.setSystemTime(start + 5_000)
+  await service.checkIdleTeams()
+  expect(current!.status).toBe('active')
+  post('alpha', '<<COLLAB_DONE>>', 5)
+  await service.checkIdleTeams()
+  expect(current!.status).toBe('disbanded')
+})
+it('requires a sentinel strictly later than another agent content even at equal timestamps', async () => {
+  messages.push(...[
+    { from: 'alpha', content: '<<COLLAB_DONE>>' },
+    { from: 'beta', content: 'Check the fallback result' },
+    { from: 'beta', content: '<<COLLAB_DONE>>' },
+  ].map((m, i) => ({ ...m, id: `same-${i}`, teamId: current!.id, to: 'team', type: 'chat' as const, timestamp: new Date(start + 1000).toISOString() })))
+  vi.setSystemTime(start + 2000)
+  await service.checkIdleTeams()
+  expect(current!.status).toBe('active')
+})
+it('instructs agents to answer new content after a sentinel and send it again', () => {
+  const prompt = service.buildPromptPreview({ teamId: 'sample', teamName: 'sample', description: 'Inspect code', agentName: 'alpha', teammateNames: ['beta'], agentIndex: 0 })
+  expect(prompt).toContain('no unanswered teammate content or question after your last message')
+  expect(prompt).toContain('If new teammate content arrives after your sentinel, respond substantively and send the sentinel again')
+})
+it('states the configured grace period in the deadline warning', async () => {
+  vi.setSystemTime(start + 10 * 60_000)
+  await service.checkIdleTeams()
+  expect(messages.find(m => m.content.startsWith('Time is up:'))?.content).toContain('within 3 minutes')
+})
+it('restores the deadline warning and its grace start from the feed after restart', async () => {
+  vi.setSystemTime(start + 10 * 60_000)
+  await service.checkIdleTeams()
+  vi.resetModules()
+  service = await import('../services/ensemble-service')
+  vi.setSystemTime(start + 12 * 60_000)
+  await service.checkIdleTeams()
+  expect(messages.filter(m => m.content.startsWith('Time is up:'))).toHaveLength(1)
+  expect(paste).toHaveBeenCalledTimes(2)
+  expect(current!.status).toBe('active')
+  vi.setSystemTime(start + 13 * 60_000)
+  await service.checkIdleTeams()
+  expect(current!.status).toBe('disbanded')
+})
+it('makes the time limit the primary summary reason even when agents never posted', async () => {
+  vi.stubEnv('ENSEMBLE_GRACE_MINUTES', '0')
+  messages = []
+  vi.setSystemTime(start + 10 * 60_000)
+  await service.checkIdleTeams()
+  const summary = fs.readFileSync(path.join(root, current!.id, 'summary.txt'), 'utf8')
+  expect(summary).toContain('RUN STOPPED: team stopped on time limit')
+  expect(summary).not.toContain('RUN FAILED: no agent ever posted a message')
+  expect(summary).not.toContain('points at prompt delivery')
+  expect(summary).toContain('Messages: 0')
+})

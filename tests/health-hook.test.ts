@@ -1,5 +1,6 @@
 import fs from 'fs'
 import path from 'path'
+import { spawn } from 'child_process'
 import { afterAll, afterEach, expect, it, vi } from 'vitest'
 import { checkAgentHealth } from '../lib/agent-health'
 
@@ -61,4 +62,62 @@ it('terminates hook descendants on timeout', async () => {
   expect(result.warnings.join(' ')).toContain('Health hook failed')
   await new Promise(resolve => setTimeout(resolve, 600))
   expect(fs.existsSync(marker)).toBe(false)
+})
+it('rejects parseable output when the hook exits unsuccessfully or writes trailing data', async () => {
+  const result = await checkAgentHealth(['codex'], true, { ...defaults, healthCommand: hook(null, 'process.stdout.write(JSON.stringify({codex:{status:"ok"}})); setTimeout(() => { process.stdout.write("garbage"); process.exit(2) }, 10)') }, 1000)
+  expect(result.agents).toBeUndefined()
+  expect(result.warnings.join(' ')).toContain('Health hook failed')
+})
+
+async function helperProcess(entry: string, env: Record<string, string>, limitMs: number) {
+  const child = spawn(process.execPath, ['--import', path.resolve('node_modules/tsx/dist/loader.mjs'), entry, 'codex', '1'], {
+    env: { ...process.env, ...env, NODE_NO_WARNINGS: '1' }, stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let stdout = ''
+  let stderr = ''
+  let timedOut = false
+  child.stdout.on('data', chunk => { stdout += chunk })
+  child.stderr.on('data', chunk => { stderr += chunk })
+  const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL') }, limitMs)
+  const code = await new Promise<number | null>((resolve, reject) => {
+    child.on('exit', resolve)
+    child.on('error', reject)
+  }).finally(() => {
+    clearTimeout(timer)
+    child.stdout.destroy()
+    child.stderr.destroy()
+  })
+  return { code, timedOut, stdout, stderr }
+}
+function cleanChild(pidFile: string) {
+  if (fs.existsSync(pidFile)) {
+    const pid = Number(fs.readFileSync(pidFile, 'utf8'))
+    if (Number.isInteger(pid) && pid > 0) {
+      try { process.kill(pid, 'SIGKILL') } catch { /* child already exited */ }
+    }
+  }
+}
+it('exits the helper process within two seconds when sleep inherits stdout after JSON', async () => {
+  const script = path.join(root, 'background.sh')
+  const pidFile = path.join(root, 'sleep.pid')
+  fs.writeFileSync(script, `printf '%s' '{"codex":{"status":"ok"}}'\nsleep 8 &\necho $! > '${pidFile}'\n`)
+  try {
+    const result = await helperProcess(path.resolve('scripts/agent-health.ts'), { ENSEMBLE_HEALTH_CMD: `/bin/bash '${script}'` }, 2000)
+    expect(result.timedOut, result.stderr).toBe(false)
+    expect(result.code).toBe(0)
+    expect(result.stdout.trim()).toBe('codex')
+  } finally { cleanChild(pidFile) }
+})
+it('lets a library caller exit within timeout plus one second despite a setsid child holding its pipes', async () => {
+  const pidFile = path.join(root, 'detached.pid')
+  const healthCommand = hook(null, `const child = require('child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 8000)'], { detached: true, stdio: ['ignore', process.stdout, process.stderr] }); require('fs').writeFileSync(${JSON.stringify(pidFile)}, String(child.pid)); setInterval(() => {}, 1000)`)
+  const entry = path.join(root, 'caller.mts')
+  fs.writeFileSync(entry, `import { checkAgentHealth } from ${JSON.stringify(path.resolve('lib/agent-health.ts'))}; console.log(JSON.stringify(await checkAgentHealth(['codex'], true, ${JSON.stringify({ ...defaults, healthCommand })}, 300)));`)
+  try {
+    const result = await helperProcess(entry, {}, 1300)
+    expect(result.timedOut, result.stderr).toBe(false)
+    expect(result.code).toBe(0)
+    expect(result.stdout).toContain('Health hook failed')
+    expect(fs.existsSync(pidFile), 'the setsid child must really have started').toBe(true)
+  } finally { cleanChild(pidFile) }
 })
