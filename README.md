@@ -127,10 +127,11 @@ export COLLAB_AGENTS="codex,claude,grok"
 ./scripts/collab-launch.sh "$(pwd)" "Security audit"   # runs all three
 ```
 
-Precedence is: third argument > `COLLAB_AGENTS` > the default pair. Naming your agents, by
-argument *or* by env var, also turns off the auto-fallback: a dead agent then fails preflight
-loudly instead of being quietly swapped for a working one. That is deliberate. If you asked for
-three agents you want to hear that one of them is broken, not get two and no explanation.
+Precedence is: third argument > `COLLAB_AGENTS` > the default pair. Naming your agents as an
+argument turns off the auto-fallback: a dead agent then fails preflight loudly (exit 7 with the
+healthy alternatives) instead of being swapped for a working one. `COLLAB_AGENTS` is a standing
+preference, so it keeps the auto-fallback; every swap is printed as a warning
+(`Auto-fallback: codex -> glm`), so you still hear that an agent was unavailable.
 
 **4. Specify agents in the API call:**
 ```bash

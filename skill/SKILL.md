@@ -102,8 +102,8 @@ becomes a hard failure instead of a silent swap.
 
 Also settable via `COLLAB_AGENTS`, for a preferred line-up you do not want to retype
 (`export COLLAB_AGENTS="codex,claude,grok"`). Precedence: 3rd argument > `COLLAB_AGENTS` >
-the default pair. The env var counts as naming your agents, so it disables the auto-fallback
-too.
+the default pair. Only the argument counts as naming your agents; `COLLAB_AGENTS` is a standing
+preference and keeps the auto-fallback, with every swap printed as a warning.
 
 **Template selection (4th argument, optional).** A key from `collab-templates.json` that
 gives each agent an explicit role instead of the generic lead/worker prompt. Also settable

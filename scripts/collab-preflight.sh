@@ -30,10 +30,13 @@ SERVICE_MAX_AGE_HOURS="${COLLAB_SERVICE_MAX_AGE:-24}"
 OVERRIDE_FILE="${COLLAB_OVERRIDE_FILE:-/tmp/collab-agents-override.txt}"
 
 # ─── Which agents does this run need? ───
-REQUESTED_AGENTS="${1:-${COLLAB_AGENTS:-}}"
+# Only an argument is an explicit choice. COLLAB_AGENTS is a standing default
+# (often exported in a shell profile), so it gets the same automatic fallback
+# as the built-in pair instead of blocking on one unavailable agent.
+REQUESTED_AGENTS="${1:-}"
 EXPLICIT_AGENTS=1
 if [ -z "$REQUESTED_AGENTS" ]; then
-  REQUESTED_AGENTS="codex,claude"
+  REQUESTED_AGENTS="${COLLAB_AGENTS:-codex,claude}"
   EXPLICIT_AGENTS=0
 fi
 

@@ -47,3 +47,16 @@ it('persists the full healthy default selection after successful preflight', () 
   expect(result.status, result.stdout + result.stderr).toBe(0)
   expect(fs.readFileSync(path.join(root, 'override'), 'utf8').trim()).toBe('glm,gemini')
 })
+
+it('treats COLLAB_AGENTS as a default set with fallback, not as an explicit choice', () => {
+  const file = path.join(root, 'health-default.cjs')
+  fs.writeFileSync(file, `console.log(${JSON.stringify(JSON.stringify({ codex: { status: 'down' }, claude: { status: 'ok' }, grok: { status: 'ok' }, glm: { status: 'ok' } }))})`)
+  const result = spawnSync('/bin/bash', [preflight], { encoding: 'utf8', env: {
+    ...process.env, PATH: root, HOME: root, TMPDIR: root,
+    ENSEMBLE_CONFIG: path.join(root, 'absent'), ENSEMBLE_URL: 'http://unused.invalid',
+    ENSEMBLE_HEALTH_CMD: `${JSON.stringify(node)} ${JSON.stringify(file)}`,
+    COLLAB_AGENTS: 'codex,claude,grok', COLLAB_OVERRIDE_FILE: path.join(root, 'override-default'),
+  } })
+  expect(result.status).not.toBe(7)
+  expect(result.stderr).toContain('Auto-fallback: codex -> glm')
+})
