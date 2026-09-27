@@ -24,7 +24,8 @@ const TRICKY_TEXTS = [
 ]
 
 describe.skipIf(!HAS_TMUX)('agent-invoer via tmux (echte tmux)', () => {
-  const socketDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ens-guard-'))
+  // Kort basispad: vitest zet TMPDIR in de repo, en een tmux-socketpad mag max ~104 tekens zijn.
+  const socketDir = fs.mkdtempSync(path.join(process.platform === 'win32' ? os.tmpdir() : '/tmp', 'ens-guard-'))
   const socket = path.join(socketDir, 'tmux.sock')
   const oldTmux = process.env.TMUX
   let runtime: TmuxRuntime
