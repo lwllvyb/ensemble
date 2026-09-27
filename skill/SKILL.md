@@ -92,7 +92,7 @@ with `COLLAB_HERDR_MODE=split|tab`, or the iTerm layout with
 
 **Agent selection (3rd argument, optional).** Comma-separated keys from `agents.json`;
 the first one becomes lead. Default when omitted: `codex` (lead) + `claude code` (worker).
-Available keys: `codex`, `claude`, `grok`, `agy`, `gemini`, `glm`, `opencode`. These are the keys
+Available keys: `codex`, `claude`, `grok`, `agy`, `glm`, `opencode`. (`gemini` is still in `agents.json` but does not work: gemini-cli was uninstalled on 27-09-2026, so never pass it.) The listed keys are the working ones
 actually present in `agents.json`. An unknown key is not an error: `resolveAgentProgram()`
 falls back to `claude`, so a typo silently spawns a second claude instead of failing.
 Only pass this when the user explicitly names agents in the task ("laat agy en claude…").
