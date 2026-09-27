@@ -90,7 +90,7 @@ describe.skipIf(!HAS_TMUX)('agent-invoer via tmux (echte tmux)', () => {
     // `cat` speelt de agent: het schrijft precies terug wat er binnenkomt, en
     // is geen shell, dus zou quoting ergens misgaan dan zie je het hier.
     const out = path.join(socketDir, `out-${n}.txt`)
-    const name = newSession(`cat > '${out}'`)
+    const name = newSession(`exec cat > '${out}'`)
     await waitFor(() => tmux('display-message', '-p', '-t', name, '#{pane_current_command}').trim() === 'cat')
     const file = path.join(socketDir, `in-${n}.txt`)
     fs.writeFileSync(file, text)
