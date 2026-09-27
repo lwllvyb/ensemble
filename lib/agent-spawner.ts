@@ -262,7 +262,7 @@ export async function getAgentTokenUsage(sessionName: string): Promise<string> {
 /**
  * Check if a remote session exists and is ready
  */
-export async function isRemoteSessionReady(hostUrl: string, sessionName: string): Promise<boolean> {
+export async function isRemoteSessionReady(hostUrl: string, sessionName: string): Promise<boolean | undefined> {
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), 5000)
   try {
@@ -272,11 +272,12 @@ export async function isRemoteSessionReady(hostUrl: string, sessionName: string)
       cache: 'no-store',
       signal: ctrl.signal,
     })
-    if (!response.ok) return false
+    if (response.status === 404) return false
+    if (!response.ok) return undefined
     const body = await response.json().catch(() => null)
-    return Boolean(body?.exists)
+    return typeof body?.exists === 'boolean' ? body.exists : undefined
   } catch {
-    return false
+    return undefined
   } finally {
     clearTimeout(timer)
   }

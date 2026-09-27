@@ -153,7 +153,7 @@ class EnsembleService {
       sessionExists: async (name, hostId) => {
         if (hostId && !isSelf(hostId)) {
           const host = getHostById(hostId)
-          return host ? isRemoteSessionReady(host.url, name) : false
+          return host ? isRemoteSessionReady(host.url, name) : undefined
         }
         return getRuntime().sessionExists(name)
       },

@@ -1,7 +1,7 @@
 import fs from 'fs'
 import path from 'path'
 import { v4 as uuidv4 } from 'uuid'
-import type { AgentRuntime } from './agent-runtime'
+import { isShellCommand, type AgentRuntime } from './agent-runtime'
 import type { EnsembleMessage, EnsembleTeam, EnsembleTeamAgent } from '../types/ensemble'
 
 const DEFAULT_POLL_INTERVAL_MS = 30_000
@@ -48,14 +48,14 @@ interface AgentWatchdogState {
 
 interface AgentWatchdogDeps {
   replacementEnabled?: () => boolean
-  sessionExists?: (name: string, hostId?: string) => Promise<boolean>
+  sessionExists?: (name: string, hostId?: string) => Promise<boolean | undefined>
   replaceAgent?: (team: EnsembleTeam, agent: EnsembleTeamAgent, detail: string) => Promise<boolean>
   onAgentStalled?: (team: EnsembleTeam, agent: EnsembleTeamAgent, detail: string) => void
   loadTeams: () => EnsembleTeam[]
   markAgentFailed?: (teamId: string, agentName: string) => void
   getMessages: (teamId: string) => EnsembleMessage[]
   appendMessage: (teamId: string, message: EnsembleMessage) => void
-  getRuntime: () => Pick<AgentRuntime, 'sendKeys' | 'pasteFromFile'>
+  getRuntime: () => Pick<AgentRuntime, 'sendKeys' | 'pasteFromFile' | 'getForegroundCommand'>
   resolveAgentProgram: (program: string) => { inputMethod: 'pasteFromFile' | 'sendKeys' }
   isSelf: (hostId?: string) => boolean
   getHostById: (hostId: string) => { url: string } | undefined
@@ -95,6 +95,7 @@ export function getWatchdogMaxNudges(): number {
 export class AgentWatchdog {
   private polling = false
   private readonly state = new Map<string, AgentWatchdogState>()
+  private readonly remoteAbsences = new Map<string, number>()
   private readonly timer: NodeJS.Timeout
   private readonly now: () => number
   private readonly nudgeAfterMs: number
@@ -124,7 +125,12 @@ export class AgentWatchdog {
 
       for (const key of this.state.keys()) {
         const teamId = key.split(':', 1)[0]
-        if (!activeTeamIds.has(teamId)) this.state.delete(key)
+        if (!activeTeamIds.has(teamId)) {
+          this.state.delete(key)
+        }
+      }
+      for (const key of this.remoteAbsences.keys()) {
+        if (!activeTeamIds.has(key.split(':', 1)[0])) this.remoteAbsences.delete(key)
       }
 
       await Promise.all(activeTeams.map(async team => {
@@ -140,6 +146,7 @@ export class AgentWatchdog {
   stop(): void {
     clearInterval(this.timer)
     this.state.clear()
+    this.remoteAbsences.clear()
   }
 
   private async pollTeam(team: EnsembleTeam): Promise<void> {
@@ -150,7 +157,14 @@ export class AgentWatchdog {
     for (const key of this.state.keys()) {
       if (!key.startsWith(`${team.id}:`)) continue
       const agentName = key.slice(team.id.length + 1)
-      if (!activeAgentNames.has(agentName)) this.state.delete(key)
+      if (!activeAgentNames.has(agentName)) {
+        this.state.delete(key)
+      }
+    }
+    for (const key of this.remoteAbsences.keys()) {
+      if (key.startsWith(`${team.id}:`) && !activeAgentNames.has(key.slice(team.id.length + 1))) {
+        this.remoteAbsences.delete(key)
+      }
     }
 
     for (const agent of activeAgents) {
@@ -158,14 +172,34 @@ export class AgentWatchdog {
       const lastAgentMessage = [...messages].reverse().find(message => message.from === agent.name)
       if (lastAgentMessage?.content.trim() === '<<COLLAB_DONE>>') {
         this.state.delete(stateKey)
-        continue
-      }
-      if (this.deps.replacementEnabled?.() && this.deps.sessionExists && !await this.deps.sessionExists(`${team.name}-${agent.name}`, agent.hostId)) {
-        await this.handleStall(team, agent, 'Agent session disappeared')
+        this.remoteAbsences.delete(stateKey)
         continue
       }
       const lastMessageAt = lastAgentMessage?.timestamp || agent.startedAt || team.createdAt
       const previousState = this.state.get(stateKey)
+      if (this.deps.replacementEnabled?.() && this.deps.sessionExists) {
+        const sessionName = `${team.name}-${agent.name}`
+        const remote = Boolean(agent.hostId && !this.deps.isSelf(agent.hostId))
+        let exists: boolean | undefined
+        try { exists = await this.deps.sessionExists(sessionName, agent.hostId) } catch { exists = undefined }
+        const remoteMissingPolls = remote && exists === false
+          ? (this.remoteAbsences.get(stateKey) ?? 0) + 1 : 0
+        if (remoteMissingPolls) this.remoteAbsences.set(stateKey, remoteMissingPolls)
+        else this.remoteAbsences.delete(stateKey)
+        if (exists === false && (!remote || remoteMissingPolls >= 2)) {
+          await this.handleStall(team, agent, 'Agent session disappeared')
+          continue
+        }
+        if (remote && exists !== true) continue
+        if (!remote && exists === true) {
+          let foreground = ''
+          try { foreground = await this.deps.getRuntime().getForegroundCommand?.(sessionName) ?? '' } catch { /* unknown */ }
+          if (foreground && isShellCommand(foreground)) {
+            await this.handleStall(team, agent, 'Agent CLI exited to shell')
+            continue
+          }
+        }
+      }
 
       if (!previousState) {
         this.state.set(stateKey, { lastMessageAt })
@@ -299,6 +333,7 @@ export class AgentWatchdog {
       const refreshed = this.deps.loadTeams().find(candidate => candidate.id === team.id)
       if (refreshed) team.agents = refreshed.agents
       this.state.delete(`${team.id}:${agent.name}`)
+      this.remoteAbsences.delete(`${team.id}:${agent.name}`)
       return
     }
     agent.status = 'failed'

@@ -35,8 +35,10 @@ export function runShellHook(command: string, name: string, args: string[], time
       reject(new Error(`${name} command failed`))
     }
     const timer = setTimeout(fail, timeoutMs)
-    child.stdin?.on('error', fail)
-    if (stdin !== undefined) child.stdin?.end(stdin)
+    child.stdin?.on('error', () => {})
+    if (stdin !== undefined) {
+      try { child.stdin?.end(stdin) } catch { /* hook already closed stdin */ }
+    }
     child.stdout!.setEncoding('utf8')
     child.stdout!.once('close', () => {
       stdoutClosed = true

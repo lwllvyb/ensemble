@@ -7,7 +7,7 @@ import { execFile } from 'child_process'
 import { promisify } from 'util'
 import path from 'path'
 import fs from 'fs'
-import os from 'os'
+import { getEnsembleDataDir } from './ensemble-paths'
 
 const execFileAsync = promisify(execFile)
 
@@ -190,7 +190,10 @@ export async function createTeamWorktree(teamId: string, basePath: string): Prom
     await execFileAsync('git', ['rev-parse', '--show-toplevel'], { cwd: basePath })
   } catch { throw new Error('Team worktree requires a git repository in workingDirectory') }
   const branch = `ensemble/${teamId.slice(0, 8)}`
-  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'ens-'))
+  // Keep the suffix short because tmux socket paths have a strict length limit.
+  const worktreesRoot = path.join(getEnsembleDataDir(), 'w')
+  fs.mkdirSync(worktreesRoot, { recursive: true })
+  const parent = fs.mkdtempSync(path.join(worktreesRoot, 'ens-'))
   const worktreePath = path.join(parent, 'work')
   try {
     await execFileAsync('git', ['worktree', 'add', '-b', branch, worktreePath, 'HEAD'], { cwd: basePath })

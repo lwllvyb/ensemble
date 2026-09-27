@@ -97,6 +97,75 @@ describe('AgentWatchdog', () => {
     })
   }
 
+  it('replaces a remote session only after two consecutive explicit absences', async () => {
+    teams = [makeTeam({ agents: [{ ...makeTeam().agents[0], hostId: 'remote' }] })]
+    const sessionExists = vi.fn<() => Promise<boolean | undefined>>()
+      .mockResolvedValueOnce(false)
+      .mockRejectedValueOnce(new Error('connection lost'))
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(false)
+    const replaceAgent = vi.fn(async () => true)
+    const watchdog = new AgentWatchdog({
+      loadTeams: () => teams, getMessages: () => messages,
+      appendMessage: (_teamId, message) => appended.push(message),
+      getRuntime: () => ({ sendKeys, pasteFromFile }),
+      resolveAgentProgram: () => ({ inputMethod: 'sendKeys' }),
+      isSelf: hostId => hostId !== 'remote', getHostById: () => undefined,
+      postRemoteSessionCommand, collabDeliveryFile: () => path.resolve('tmp/watchdog/nudge'),
+      replacementEnabled: () => true, sessionExists, replaceAgent,
+      now: () => nowMs, nudgeAfterMs: 90_000,
+    })
+    try {
+      for (let i = 0; i < 5; i++) {
+        await watchdog.poll()
+        expect(replaceAgent).not.toHaveBeenCalled()
+      }
+      await watchdog.poll()
+      expect(replaceAgent).toHaveBeenCalledOnce()
+    } finally { watchdog.stop() }
+  })
+
+  it('replaces a local session when its foreground process is a shell', async () => {
+    const replaceAgent = vi.fn(async () => true)
+    const getForegroundCommand = vi.fn(async () => 'zsh')
+    const watchdog = new AgentWatchdog({
+      loadTeams: () => teams, getMessages: () => messages,
+      appendMessage: (_teamId, message) => appended.push(message),
+      getRuntime: () => ({ sendKeys, pasteFromFile, getForegroundCommand }),
+      resolveAgentProgram: () => ({ inputMethod: 'sendKeys' }),
+      isSelf: () => true, getHostById: () => undefined,
+      postRemoteSessionCommand, collabDeliveryFile: () => path.resolve('tmp/watchdog/nudge'),
+      replacementEnabled: () => true, sessionExists: async () => true, replaceAgent,
+      now: () => nowMs,
+    })
+    try {
+      await watchdog.poll()
+      expect(replaceAgent).toHaveBeenCalledOnce()
+      expect(pasteFromFile).not.toHaveBeenCalled()
+    } finally { watchdog.stop() }
+  })
+
+  it('keeps the existing nudge behavior when replacement is disabled', async () => {
+    const replaceAgent = vi.fn(async () => true)
+    const watchdog = new AgentWatchdog({
+      loadTeams: () => teams, getMessages: () => messages,
+      appendMessage: (_teamId, message) => appended.push(message),
+      getRuntime: () => ({ sendKeys, pasteFromFile, getForegroundCommand: async () => 'zsh' }),
+      resolveAgentProgram: () => ({ inputMethod: 'sendKeys' }),
+      isSelf: () => true, getHostById: () => undefined,
+      postRemoteSessionCommand, collabDeliveryFile: () => path.resolve('tmp/watchdog/nudge'),
+      replacementEnabled: () => false, sessionExists: async () => true, replaceAgent,
+      now: () => nowMs, nudgeAfterMs: 0,
+    })
+    try {
+      await watchdog.poll()
+      expect(replaceAgent).not.toHaveBeenCalled()
+      expect(pasteFromFile).toHaveBeenCalledOnce()
+    } finally { watchdog.stop() }
+  })
+
   it('nudges an active agent after prolonged silence and logs it to the team feed', async () => {
     const watchdog = createWatchdog()
     await watchdog.poll()

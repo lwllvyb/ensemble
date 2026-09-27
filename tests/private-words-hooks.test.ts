@@ -42,6 +42,17 @@ it('blocks a private word in the staged version and reports its file and line', 
   expect(result.stderr.toLowerCase()).not.toContain('secret client')
 })
 
+it('blocks a private word in a staged binary file', () => {
+  const words = list('Hidden Phrase\n')
+  fs.writeFileSync(path.join(repo, 'asset.bin'), Buffer.from('prefix\0Hidden Phrase\0suffix'))
+  expect(run('git', ['add', 'asset.bin']).status).toBe(0)
+
+  const result = run('bash', [path.join(hooks, 'pre-commit')], { ENSEMBLE_PRIVE_WOORDEN: words })
+  expect(result.status).toBe(1)
+  expect(result.stderr).toContain('asset.bin:1: privé-woord nr 1 uit je lijst')
+  expect(result.stderr.toLowerCase()).not.toContain('hidden phrase')
+})
+
 it('allows an unchanged private word but blocks one on a newly added line during commit', () => {
   const words = list('Secret Client\n')
   const file = path.join(repo, 'example.txt')

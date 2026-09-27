@@ -1,15 +1,18 @@
 import fs from 'fs'
 import path from 'path'
 import { execFileSync } from 'child_process'
-import { afterAll, expect, it } from 'vitest'
+import { afterAll, expect, it, vi } from 'vitest'
 import { createTeamWorktree } from '../lib/worktree-manager'
 
 const root = fs.mkdtempSync(path.resolve('tmp/shared-worktree-'))
 const git = (...args: string[]) => execFileSync('git', args, { cwd: root, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: path.join(root, 'absent-config'), GIT_CONFIG_NOSYSTEM: '1' } }).trim()
 const worktrees: string[] = []
+const dataDirs: string[] = []
 afterAll(() => {
   for (const file of worktrees) fs.rmSync(path.dirname(file), { recursive: true, force: true })
+  for (const dir of dataDirs) fs.rmSync(dir, { recursive: true, force: true })
   fs.rmSync(root, { recursive: true, force: true })
+  vi.unstubAllEnvs()
 })
 it('requires a git repository', async () => {
   // A directory inside this repository would inherit its git metadata.
@@ -17,6 +20,9 @@ it('requires a git repository', async () => {
   await expect(createTeamWorktree('missing-team', invalid)).rejects.toThrow('requires a git repository')
 })
 it('creates a shared branch at HEAD without changing the original branch', async () => {
+  const dataDir = `${root}-data`
+  dataDirs.push(dataDir)
+  vi.stubEnv('ENSEMBLE_DATA_DIR', dataDir)
   git('init')
   git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '--allow-empty', '-m', 'Initial fixture')
   const head = git('rev-parse', 'HEAD')
@@ -28,4 +34,5 @@ it('creates a shared branch at HEAD without changing the original branch', async
   expect(git('symbolic-ref', '--short', 'HEAD')).toBe(branch)
   expect(fs.existsSync(tree.path)).toBe(true)
   expect(path.relative(root, tree.path).startsWith('..')).toBe(true)
+  expect(tree.path.startsWith(path.join(dataDir, 'w') + path.sep)).toBe(true)
 })
