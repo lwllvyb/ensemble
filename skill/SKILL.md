@@ -92,8 +92,8 @@ with `COLLAB_HERDR_MODE=split|tab`, or the iTerm layout with
 
 **Agent selection (3rd argument, optional).** Comma-separated keys from `agents.json`;
 the first one becomes lead. Default when omitted: `codex` (lead) + `claude code` (worker).
-Available keys in `agents.json`: `codex`, `claude`, `grok`, `agy`, `gemini`, `glm`,
-`opencode`. When configured, `healthCommand` checks which agents are currently usable
+Available keys: `codex`, `claude`, `grok`, `agy`, `gemini`, `glm`, `opencode` (all defined in `agents.json`).
+When configured, `healthCommand` checks which agents are currently usable
 and catches an unavailable CLI before launch. An unknown key is not an error: `resolveAgentProgram()`
 falls back to `claude`, so a typo silently spawns a second claude instead of failing.
 Only pass this when the user explicitly names agents in the task (for example, "use agy and claude").
