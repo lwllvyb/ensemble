@@ -37,7 +37,7 @@ nav_order: 7
 ```
 ensemble/
 ├── server.ts                  # HTTP server (port 23000)
-├── agents.json                # Agent program definitions (codex, claude, grok, agy, gemini, glm, opencode)
+├── agents.json                # Agent program definitions (codex, claude, grok, agy, gemini, glm, opencode, mimo)
 ├── collab-templates.json      # Pre-built team templates
 ├── cli/
 │   ├── ensemble.ts            # CLI entry point
@@ -112,7 +112,7 @@ first, then a substring match (so `claude code` finds `claude`), and finally a f
 program name produces a duplicate Claude agent instead of an error.
 
 Shipped programs: `codex` (default lead), `claude` (default worker), `grok`, `agy`, `gemini`, `glm`,
-`opencode`. See [Configuration](configuration#supported-agents) for their status and flags.
+`opencode`, `mimo`. See [Configuration](configuration#supported-agents) for their status and flags.
 
 ### Agent Watchdog
 

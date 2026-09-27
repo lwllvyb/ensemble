@@ -13,6 +13,7 @@
 #   COLLAB_MONITOR=tmux     force a detached tmux session (old behavior)
 #   COLLAB_MONITOR=none     no monitor at all
 #   COLLAB_ITERM_MODE=split (default) | tab | window   how iTerm opens the monitor
+# COLLAB_WORKTREE=team creates a retained shared git worktree for local agents.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -25,7 +26,7 @@ TASK="${2:?Usage: collab-launch.sh <cwd> <task> [agents] [template]}"
 # Optional: comma-separated agent names (e.g. "agy,claude"). Falls back to
 # COLLAB_AGENTS so a preferred line-up can be set once in the shell instead of
 # being retyped every run; collab-preflight.sh already reads the same variable.
-# Precedence: 3rd argument > COLLAB_AGENTS > the service default (codex+claude).
+# Precedence: 3rd argument > COLLAB_AGENTS > configured plan > default pair.
 # Note this also disables the auto-fallback below, which is intended: naming
 # your agents, by argument or by env, means a dead one is a hard failure.
 AGENTS="${3:-${COLLAB_AGENTS:-}}"
@@ -92,7 +93,7 @@ fi
 # ─── 2. Create team (use env vars to avoid quoting hell) ───
 TEAM_NAME="collab-$(python3 -c 'import random,time; print(str(time.time_ns()//1000000)+"-"+str(random.randint(1000,9999)))')"
 PAYLOAD_FILE=$(mktemp)
-TNAME="$TEAM_NAME" TDESC="$TASK" TCWD="$CWD" THOST="$HOST_ID" TAGENTS="$AGENTS" TTEMPLATE="$TEMPLATE" PFILE="$PAYLOAD_FILE" python3 -c "
+TNAME="$TEAM_NAME" TDESC="$TASK" TCWD="$CWD" THOST="$HOST_ID" TAGENTS="$AGENTS" TTEMPLATE="$TEMPLATE" TWORKTREE="${COLLAB_WORKTREE:-}" PFILE="$PAYLOAD_FILE" python3 -c "
 import json, os
 agents_str = os.environ.get('TAGENTS', '')
 if agents_str:
@@ -101,9 +102,17 @@ if agents_str:
     for n in names[1:]:
         agents.append({'program': n, 'role': 'worker', 'hostId': os.environ['THOST']})
 else:
-    agents = [
+    plan_command = os.environ.get('ENSEMBLE_PLAN_CMD', '').strip()
+    if not plan_command:
+        config_path = os.environ.get('ENSEMBLE_CONFIG', os.path.expanduser('~/.config/ensemble/config.json'))
+        try:
+            with open(config_path) as config_file:
+                plan_command = json.load(config_file).get('planCommand', '')
+        except (OSError, ValueError, AttributeError):
+            pass
+    agents = [] if isinstance(plan_command, str) and plan_command.strip() else [
         {'program': 'codex', 'role': 'lead', 'hostId': os.environ['THOST']},
-        {'program': 'claude code', 'role': 'worker', 'hostId': os.environ['THOST']}
+        {'program': 'claude code', 'role': 'worker', 'hostId': os.environ['THOST']},
     ]
 payload = {
     'name': os.environ['TNAME'],
@@ -112,6 +121,8 @@ payload = {
     'feedMode': 'live',
     'workingDirectory': os.environ['TCWD']
 }
+if os.environ.get('TWORKTREE') == 'team':
+    payload['worktree'] = 'team'
 template = os.environ.get('TTEMPLATE', '').strip()
 if template:
     payload['templateName'] = template

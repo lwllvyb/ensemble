@@ -62,5 +62,14 @@
     "inputMethod": "sendKeys",
     "color": "magenta",
     "icon": "◈"
+  },
+  "mimo": {
+    "name": "mimo",
+    "command": "mimo",
+    "flags": ["--trust", "--dangerously-skip-permissions"],
+    "readyMarker": "Type your message",
+    "inputMethod": "pasteFromFile",
+    "color": "cyan",
+    "icon": "◇"
   }
 }

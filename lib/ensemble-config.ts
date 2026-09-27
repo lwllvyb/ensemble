@@ -4,6 +4,11 @@ import path from 'path'
 
 export interface EnsembleConfig {
   alertHubUrl: string
+  rosterCommand?: string
+  planCommand?: string
+  eventsCommand?: string
+  replaceStalledAgents?: boolean
+  maxReplacementsPerTeam?: number
   healthCommand?: string
   fallbackOrder: string[]
   maxTeamMinutes?: number
@@ -38,6 +43,13 @@ export function readEnsembleConfig(): EnsembleConfig {
   const config: EnsembleConfig = { fallbackOrder: ['codex', 'claude', 'glm', 'grok', 'agy', 'gemini'], graceMinutes: 3, alertHubUrl: '' }
   const alertHubUrl = process.env.ENSEMBLE_ALERT_HUB_URL ?? file.alertHubUrl
   if (typeof alertHubUrl === 'string') config.alertHubUrl = alertHubUrl.trim()
+  const replaceOverride = process.env.ENSEMBLE_REPLACE_STALLED?.trim()
+  config.replaceStalledAgents = replaceOverride ? /^(true|1)$/i.test(replaceOverride) : file.replaceStalledAgents === true
+  config.maxReplacementsPerTeam = typeof file.maxReplacementsPerTeam === 'number' && Number.isInteger(file.maxReplacementsPerTeam) && file.maxReplacementsPerTeam >= 0 ? file.maxReplacementsPerTeam : 2
+  for (const [key, env] of [['rosterCommand', 'ENSEMBLE_ROSTER_CMD'], ['planCommand', 'ENSEMBLE_PLAN_CMD'], ['eventsCommand', 'ENSEMBLE_EVENTS_CMD']] as const) {
+    const command = value(key, env)
+    if (typeof command === 'string' && command.trim()) config[key] = command
+  }
   const health = value('healthCommand', 'ENSEMBLE_HEALTH_CMD')
   const preamble = value('taskPreamble', 'ENSEMBLE_TASK_PREAMBLE')
   if (typeof health === 'string' && health.trim()) config.healthCommand = health

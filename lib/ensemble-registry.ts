@@ -4,6 +4,7 @@ import os from 'os'
 import { v4 as uuidv4 } from 'uuid'
 import type { EnsembleTeam, EnsembleMessage, CreateTeamRequest } from '../types/ensemble'
 import { getEnsembleRegistryDir } from './ensemble-paths'
+import { emitEvent } from './brain-hooks'
 import { collabMessagesFile } from './collab-paths'
 
 const ENSEMBLE_DIR = getEnsembleRegistryDir()
@@ -131,7 +132,9 @@ export function createTeam(request: CreateTeamRequest): EnsembleTeam {
       name: request.name,
       description: request.description,
       status: 'forming',
-      agents: request.agents.map((a, i) => ({
+      workingDirectory: request.workingDirectory || process.cwd(),
+      worktree: request.worktree,
+      agents: (request.agents ?? []).map((a, i) => ({
         agentId: '',
         name: `${a.program.toLowerCase().replace(/\s+/g, '-').split('-')[0]}-${i + 1}`,
         program: a.program,
@@ -163,10 +166,12 @@ export function updateTeam(id: string, updates: Partial<EnsembleTeam>): Ensemble
 export function markAgentFailed(teamId: string, agentName: string): void {
   withTeamsLock(() => {
     const teams = readTeamsFile()
-    const agent = teams.find(team => team.id === teamId)?.agents.find(candidate => candidate.name === agentName)
-    if (!agent || agent.status === 'failed') return
+    const team = teams.find(team => team.id === teamId)
+    const agent = team?.agents.find(candidate => candidate.name === agentName)
+    if (!agent || agent.status === 'failed' || agent.status === 'replaced') return
     agent.status = 'failed'
     writeTeamsFile(teams)
+    void emitEvent({ event: 'agent_failed', teamId, team: team!.name, agent: agentName, ts: new Date().toISOString(), detail: 'Agent failed' })
   })
 }
 

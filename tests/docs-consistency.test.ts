@@ -63,8 +63,8 @@ describe('docs match agents.json', () => {
       const lines = read(rel).split('\n')
       lines.forEach((line, i) => {
         for (const flag of removed) {
-          // This flag remains valid for agy; its removal was specific to Claude.
-          if (flag === '--dangerously-skip-permissions' && /\bagy\b/i.test(line) && !/\bclaude\b/i.test(line)) continue
+          // This flag remains valid for agy and mimo; its removal was specific to Claude.
+          if (flag === '--dangerously-skip-permissions' && /\b(agy|mimo)\b/i.test(line) && !/\bclaude\b/i.test(line)) continue
           if (line.includes(flag) && !explains.test(line)) {
             throw new Error(
               `${rel}:${i + 1} presents ${flag} without saying it was removed:\n  ${line.trim()}`,

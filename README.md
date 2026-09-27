@@ -104,6 +104,7 @@ The default team is **Codex (lead) + Claude Code (worker)**. This is the tested,
 | **GLM** | Tested in four-agent teams | Add explicitly (see below) |
 | **Antigravity CLI (`agy`)** | Configured | Add explicitly (see below) |
 | **Gemini CLI** | Legacy | Configuration retained |
+| **MiMo Code CLI** | Configured | Add explicitly as `mimo` |
 | **opencode** | Untested | Add explicitly (see below) |
 | **Any CLI tool** | Via `agents.json` | [Add a custom agent](https://michelhelsdingen.github.io/ensemble/configuration#adding-a-custom-agent) |
 
@@ -256,3 +257,59 @@ See [full configuration docs](https://michelhelsdingen.github.io/ensemble/config
 ## License
 
 [MIT](LICENSE)
+
+### External brain hooks and shared worktrees
+
+Optional trusted shell commands in `~/.config/ensemble/config.json` (or `ENSEMBLE_CONFIG`):
+
+```json
+{
+  "rosterCommand": "my-brain roster",
+  "planCommand": "my-brain plan",
+  "eventsCommand": "my-brain events",
+  "replaceStalledAgents": true,
+  "maxReplacementsPerTeam": 2
+}
+```
+
+Environment overrides: `ENSEMBLE_ROSTER_CMD`, `ENSEMBLE_PLAN_CMD`, `ENSEMBLE_EVENTS_CMD`,
+`ENSEMBLE_REPLACE_STALLED` (`true`/`1` enables, `false`/`0` disables).
+Replacement defaults to false, with a budget of two attempts per team.
+Missing commands preserve existing behavior. Commands run as
+`/bin/bash -c '<cmd> "$@"' ensemble-<name> <args...>` in their own process group,
+which is killed on timeout. Output is limited to 1 MiB.
+
+- `roster`: no arguments, 5 seconds, cached JSON object keyed by agent key.
+  Each entry is `{ "status": "ok|down|limit|slow|unknown", "detail": "optional" }`,
+  using the same schema as `healthCommand`.
+- `plan`: task text in `$1`, 20 seconds, returns
+  `{ "agents": ["codex", "mimo"], "template": "implement", "reason": "Complementary roles" }`.
+  The first agent leads. Extra fields are ignored. Used only with missing or empty
+  request agents; an explicit template wins. Invalid plans fall back to the default pair.
+  The plan and reason appear in the team feed.
+- `events`: no arguments, 5 seconds, one JSON line on stdin followed by EOF.
+  Delivery runs in the background; failures are nonfatal and warn at most once per team.
+  Every event has `event`, `teamId`, `team`, and an ISO-8601 `ts`.
+  Types and additional fields: `team_started` (`agents`, `cwd`, `branch`),
+  `agent_ready` / `agent_done` (`agent`), `agent_stalled` / `agent_failed`
+  (`agent`, `detail`), `agent_replaced` (`agent`, `replacement`, `detail`),
+  `team_finished` (`status`: `ok|failed|stopped`, `durationS`, `branch`, `cwd`, `detail`).
+  Fields without a value are omitted.
+
+Set API `worktree: "team"` or `COLLAB_WORKTREE=team` when launching to create a
+shared local worktree from HEAD on `ensemble/<short-team-id>`. A git repository
+is required. Every local agent uses it, and the worktree and branch remain after
+completion for review and manual merging. The summary and finish event include
+both path and branch. Existing `useWorktrees` still creates individual worktrees;
+`worktree: "team"` takes precedence if both are supplied.
+
+With replacement enabled, the watchdog checks local sessions every 20 seconds.
+A missing session or stalled agent is replaced with the first unused configured
+agent in `fallbackOrder` whose roster status is `ok`. An unavailable roster falls
+back to the health hook, then to no health check. The replacement keeps the role
+and directory and receives the original task plus at most 20 recent messages
+(8 kB). Exhausted budgets or unavailable replacements mark the agent failed.
+Remote replacements remain on the original host.
+
+MiMo Code CLI (`mimo`) is included with `--trust --dangerously-skip-permissions`,
+`Type your message` readiness, and file-based prompt delivery.

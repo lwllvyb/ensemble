@@ -13,7 +13,7 @@ function config(value: unknown) {
 }
 it('uses optional defaults when the file is absent', () => {
   vi.stubEnv('ENSEMBLE_CONFIG', path.join(root, 'missing'))
-  expect(readEnsembleConfig()).toEqual({ fallbackOrder: ['codex', 'claude', 'glm', 'grok', 'agy', 'gemini'], graceMinutes: 3, alertHubUrl: '' })
+  expect(readEnsembleConfig()).toEqual({ fallbackOrder: ['codex', 'claude', 'glm', 'grok', 'agy', 'gemini'], graceMinutes: 3, alertHubUrl: '', replaceStalledAgents: false, maxReplacementsPerTeam: 2 })
 })
 it('reads every setting and gives environment values precedence', () => {
   config({ healthCommand: 'check', fallbackOrder: ['glm'], maxTeamMinutes: 40, graceMinutes: 4, taskPreamble: 'Be concise.' })
@@ -23,11 +23,11 @@ it('reads every setting and gives environment values precedence', () => {
   vi.stubEnv('ENSEMBLE_MAX_TEAM_MINUTES', '10')
   vi.stubEnv('ENSEMBLE_GRACE_MINUTES', '0')
   vi.stubEnv('ENSEMBLE_TASK_PREAMBLE', 'Verify results.')
-  expect(readEnsembleConfig()).toEqual({ healthCommand: 'other', fallbackOrder: ['grok', 'gemini'], maxTeamMinutes: 10, graceMinutes: 0, taskPreamble: 'Verify results.', alertHubUrl: '' })
+  expect(readEnsembleConfig()).toEqual({ healthCommand: 'other', fallbackOrder: ['grok', 'gemini'], maxTeamMinutes: 10, graceMinutes: 0, taskPreamble: 'Verify results.', alertHubUrl: '', replaceStalledAgents: false, maxReplacementsPerTeam: 2 })
 })
 it('ignores invalid settings without disabling valid ones', () => {
-  config({ healthCommand: 42, fallbackOrder: [false], maxTeamMinutes: -1, graceMinutes: 'bad', taskPreamble: 'Keep tests.', alertHubUrl: '' })
-  expect(readEnsembleConfig()).toEqual({ fallbackOrder: ['codex', 'claude', 'glm', 'grok', 'agy', 'gemini'], graceMinutes: 3, taskPreamble: 'Keep tests.', alertHubUrl: '' })
+  config({ healthCommand: 42, fallbackOrder: [false], maxTeamMinutes: -1, graceMinutes: 'bad', taskPreamble: 'Keep tests.', alertHubUrl: '', replaceStalledAgents: false, maxReplacementsPerTeam: 2 })
+  expect(readEnsembleConfig()).toEqual({ fallbackOrder: ['codex', 'claude', 'glm', 'grok', 'agy', 'gemini'], graceMinutes: 3, taskPreamble: 'Keep tests.', alertHubUrl: '', replaceStalledAgents: false, maxReplacementsPerTeam: 2 })
 })
 it('warns and uses defaults for invalid JSON', () => {
   config({})
@@ -125,4 +125,19 @@ it.each([null, [], 'secret-string', 42])('ignores non-object agentEnv %j with on
   readEnsembleConfig()
   expect(warn).toHaveBeenCalledTimes(1)
   expect(String(warn.mock.calls[0][0])).not.toContain('secret-string')
+})
+
+it('parses brain hooks, limits and environment overrides', () => {
+  config({ rosterCommand: 'brain roster', planCommand: 'brain plan', eventsCommand: 'brain events', replaceStalledAgents: true, maxReplacementsPerTeam: 0 })
+  expect(readEnsembleConfig()).toMatchObject({ rosterCommand: 'brain roster', planCommand: 'brain plan', eventsCommand: 'brain events', replaceStalledAgents: true, maxReplacementsPerTeam: 0 })
+  vi.stubEnv('ENSEMBLE_ROSTER_CMD', 'other roster')
+  vi.stubEnv('ENSEMBLE_PLAN_CMD', 'other plan')
+  vi.stubEnv('ENSEMBLE_EVENTS_CMD', 'other events')
+  vi.stubEnv('ENSEMBLE_REPLACE_STALLED', 'false')
+  expect(readEnsembleConfig()).toMatchObject({ rosterCommand: 'other roster', planCommand: 'other plan', eventsCommand: 'other events', replaceStalledAgents: false })
+})
+it('ignores invalid brain settings', () => {
+  config({ rosterCommand: 1, planCommand: [], eventsCommand: false, maxReplacementsPerTeam: -1, replaceStalledAgents: 'invalid' })
+  expect(readEnsembleConfig()).toMatchObject({ replaceStalledAgents: false, maxReplacementsPerTeam: 2 })
+  expect(readEnsembleConfig().planCommand).toBeUndefined()
 })

@@ -43,7 +43,7 @@ while IFS= read -r file; do
   fi
 done <<< "$STAGED"
 
-# 3. Optional private words, checked against the staged version of each file.
+# 3. Optional private words, checked only in added lines of the staged diff.
 PRIVATE_WORDS=${ENSEMBLE_PRIVE_WOORDEN:-$HOME/.config/ensemble/prive-woorden.txt}
 if [ -f "$PRIVATE_WORDS" ]; then
   word_number=0
@@ -55,9 +55,20 @@ if [ -f "$PRIVATE_WORDS" ]; then
       [ -n "$file" ] || continue
       while IFS= read -r line_number; do
         note "$file:$line_number: privé-woord nr $word_number uit je lijst"
-      done < <(git show ":$file" 2>/dev/null | ENSEMBLE_NEEDLE="$word" awk '
+      done < <(git diff --cached -U0 --no-ext-diff -- "$file" | ENSEMBLE_NEEDLE="$word" awk '
         BEGIN { needle = tolower(ENVIRON["ENSEMBLE_NEEDLE"]) }
-        index(tolower($0), needle) { print NR }
+        /^@@ / {
+          match($0, /\+[0-9]+/)
+          line = substr($0, RSTART + 1, RLENGTH - 1) + 0
+          in_hunk = 1
+          next
+        }
+        in_hunk && /^\+/ {
+          if (index(tolower(substr($0, 2)), needle)) print line
+          line++
+          next
+        }
+        in_hunk && /^ / { line++ }
       ')
     done <<< "$STAGED"
   done < "$PRIVATE_WORDS"

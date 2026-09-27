@@ -7,6 +7,7 @@ import { execFile } from 'child_process'
 import { promisify } from 'util'
 import path from 'path'
 import fs from 'fs'
+import os from 'os'
 
 const execFileAsync = promisify(execFile)
 
@@ -181,4 +182,21 @@ export async function listTeamWorktrees(
   } catch {
     return []
   }
+}
+
+/** Shared team worktrees are retained for explicit review and merging. */
+export async function createTeamWorktree(teamId: string, basePath: string): Promise<WorktreeInfo> {
+  try {
+    await execFileAsync('git', ['rev-parse', '--show-toplevel'], { cwd: basePath })
+  } catch { throw new Error('Team worktree requires a git repository in workingDirectory') }
+  const branch = `ensemble/${teamId.slice(0, 8)}`
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'ens-'))
+  const worktreePath = path.join(parent, 'work')
+  try {
+    await execFileAsync('git', ['worktree', 'add', '-b', branch, worktreePath, 'HEAD'], { cwd: basePath })
+  } catch (error) {
+    fs.rmSync(parent, { recursive: true, force: true })
+    throw error
+  }
+  return { path: worktreePath, branch, agentName: 'team' }
 }

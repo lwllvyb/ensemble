@@ -34,3 +34,30 @@ it('preserves an explicit composition', () => {
 it('propagates health exit code 7 to the caller', () => {
   expect(run('', '7').status).toBe(7)
 })
+it('uses the default pair when there are no explicit agents, override, or plan command', () => {
+  const absentOverride = path.join(root, 'no-override')
+  spawnSync('/bin/bash', [path.join(scripts, 'collab-launch.sh'), root, 'Plan this task'], {
+    encoding: 'utf8', env: { ...process.env, PATH: `${root}:${process.env.PATH}`, TMPDIR: root,
+      COLLAB_AGENTS: '', COLLAB_SKIP_PREFLIGHT: '1', COLLAB_OVERRIDE_FILE: absentOverride,
+      COLLAB_WORKTREE: 'team', ENSEMBLE_CONFIG: absentOverride, ENSEMBLE_PLAN_CMD: '',
+      ENSEMBLE_URL: 'http://unused.invalid', TEST_PAYLOAD: path.join(root, 'planned-payload'),
+    },
+  })
+  const payload = JSON.parse(fs.readFileSync(path.join(root, 'planned-payload'), 'utf8'))
+  expect(payload.agents.map((agent: {program: string}) => agent.program)).toEqual(['codex', 'claude code'])
+  expect(payload.worktree).toBe('team')
+})
+it('leaves agent planning to the service when a plan command is configured', () => {
+  const config = path.join(root, 'config.json')
+  fs.writeFileSync(config, JSON.stringify({ planCommand: 'plan task' }))
+  spawnSync('/bin/bash', [path.join(scripts, 'collab-launch.sh'), root, 'Plan this task'], {
+    encoding: 'utf8', env: { ...process.env, PATH: `${root}:${process.env.PATH}`, TMPDIR: root,
+      COLLAB_AGENTS: '', COLLAB_SKIP_PREFLIGHT: '1', COLLAB_OVERRIDE_FILE: path.join(root, 'no-override'),
+      COLLAB_WORKTREE: 'team', ENSEMBLE_CONFIG: config, ENSEMBLE_PLAN_CMD: '',
+      ENSEMBLE_URL: 'http://unused.invalid', TEST_PAYLOAD: path.join(root, 'planned-payload'),
+    },
+  })
+  const payload = JSON.parse(fs.readFileSync(path.join(root, 'planned-payload'), 'utf8'))
+  expect(payload.agents).toEqual([])
+  expect(payload.worktree).toBe('team')
+})

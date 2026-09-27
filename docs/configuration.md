@@ -126,6 +126,7 @@ The default team is **Codex (lead) + Claude Code (worker)**. This is the fully t
 | **Antigravity CLI (`agy`)** | Configured | No | Uses `sendKeys`, `--dangerously-skip-permissions`, and unsets `GEMINI_API_KEY` and `GOOGLE_API_KEY` before launch. |
 | **Gemini CLI** | Experimental | No | Uses `pasteFromFile`, `--yolo` flag. May stop responding due to free-tier rate limits or internal TUI issues. Use a paid API key (`gemini /auth`) for best results. |
 | **GLM** | Tested in four-agent teams | No | Runs Claude Code against the Z.ai endpoint, so it behaves like `claude` (`sendKeys`, `--permission-mode auto`) with a GLM model underneath. Needs a `glm` command on PATH that sets `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN`. |
+| **MiMo Code CLI** | Configured | No | `mimo`, `--trust --dangerously-skip-permissions`, file-based prompt delivery |
 | **opencode** | Untested | No | Basic config included in `agents.json`, `sendKeys` input |
 | **Any CLI tool** | Custom | No | See [Adding a custom agent](#adding-a-custom-agent) |
 

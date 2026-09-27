@@ -31,9 +31,11 @@ import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { spawn, execFileSync } from 'child_process'
-import { createWorktree, mergeWorktree, destroyWorktree, type WorktreeInfo } from '../lib/worktree-manager'
+import { createTeamWorktree, createWorktree, mergeWorktree, destroyWorktree, type WorktreeInfo } from '../lib/worktree-manager'
 import { runStagedWorkflow } from '../lib/staged-workflow'
 import { readEnsembleConfig } from '../lib/ensemble-config'
+import { emitEvent, runPlan, type BrainEvent } from '../lib/brain-hooks'
+import { replaceTeamAgent, stopTeamReplacements } from '../lib/agent-replacement'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -133,6 +135,7 @@ const ALERT_HUB_SECRET = process.env.ALERT_HUB_SECRET || ''
 
 class EnsembleService {
   private readonly disbandingTeams = new Set<string>()
+  private readonly doneEvents = new Map<string, string>()
   private readonly deadlineWarnings = new Map<string, number>()
   private readonly idleCheckTimer: NodeJS.Timeout
   private readonly watchdog: AgentWatchdog
@@ -146,6 +149,17 @@ class EnsembleService {
     this.watchdog = new AgentWatchdog({
       loadTeams,
       markAgentFailed: (teamId, agentName) => markAgentFailed(teamId, agentName),
+      replacementEnabled: () => !!readEnsembleConfig().replaceStalledAgents,
+      sessionExists: async (name, hostId) => {
+        if (hostId && !isSelf(hostId)) {
+          const host = getHostById(hostId)
+          return host ? isRemoteSessionReady(host.url, name) : false
+        }
+        return getRuntime().sessionExists(name)
+      },
+      replaceAgent: (team, agent, detail) => replaceTeamAgent(team.id, agent.name, detail, waitForReady),
+      onAgentStalled: (team, agent, detail) => teamEvent(team, 'agent_stalled', { agent: agent.name, detail }),
+      pollIntervalMs: readEnsembleConfig().replaceStalledAgents ? 20_000 : undefined,
       getMessages: (teamId: string) => getMessages(teamId),
       appendMessage,
       getRuntime,
@@ -199,7 +213,7 @@ class EnsembleService {
         timestamp: new Date().toISOString(),
       })
       await writeDisbandSummary(teamId, { failureReason: reason })
-      await disbandTeam(teamId)
+      await disbandTeam(teamId, reason)
     } catch (err) {
       console.error(`[Ensemble] Failed to end unreachable team ${teamId}:`, err)
     } finally {
@@ -274,6 +288,14 @@ class EnsembleService {
     for (const team of teams) {
       if (this.disbandingTeams.has(team.id)) continue
       try {
+        for (const agent of team.agents.filter(a => a.status === 'active')) {
+          const last = [...getMessages(team.id)].reverse().find(m => m.from === agent.name)
+          const key = `${team.id}:${agent.name}`
+          if (last?.content.trim() === EXPLICIT_DONE_SENTINEL && this.doneEvents.get(key) !== last.id) {
+            this.doneEvents.set(key, last.id)
+            teamEvent(team, 'agent_done', { agent: agent.name })
+          }
+        }
         if (config.maxTeamMinutes !== undefined) {
           const ageMs = Date.now() - new Date(team.createdAt).getTime()
           const deadlineMs = config.maxTeamMinutes * 60_000
@@ -333,7 +355,7 @@ class EnsembleService {
           })
 
           await writeDisbandSummary(team.id)
-          await disbandTeam(team.id)
+          await disbandTeam(team.id, undefined, 'ok')
         } catch (err) {
           console.error(`[Ensemble] Auto-disband failed for ${team.id}:`, err)
         } finally {
@@ -711,14 +733,87 @@ export function buildPromptPreview(params: {
   ].join(' ')
 }
 
+async function waitForReady(
+  sessionName: string, program: string, hostId?: string, maxWait = 60000,
+): Promise<boolean> {
+  const runtime = getRuntime()
+  const start = Date.now()
+  const agentConfig = resolveAgentProgram(program)
+  const readyMarker = agentConfig.readyMarker
+  let lastGateName = ''
+  let lastGateHandledAt = 0
+  while (Date.now() - start < maxWait) {
+    try {
+      if (hostId && !isSelf(hostId)) {
+        const host = getHostById(hostId)
+        if (host && await isRemoteSessionReady(host.url, sessionName)) {
+          console.log(`[Ensemble] ${sessionName} is remotely reachable (${Math.round((Date.now() - start) / 1000)}s)`)
+          return true
+        }
+      } else {
+        // A shell in the foreground means the agent CLI is not (or no
+        // longer) running. Its prompt may even contain the ready marker
+        // (❯), so never treat it as ready and never send keys into it.
+        const foreground = runtime.getForegroundCommand
+          ? await runtime.getForegroundCommand(sessionName)
+          : ''
+        if (isShellCommand(foreground)) {
+          if (Date.now() - start >= AGENT_START_GRACE_MS) {
+            console.error(`[Ensemble] ${sessionName}: agent CLI is not running (${foreground} in foreground)`)
+            return false
+          }
+          await new Promise(r => setTimeout(r, 1000))
+          continue
+        }
+        const output = await runtime.capturePane(sessionName, 50)
+        const gate = detectLiveGate(output)
+        if (gate) {
+          const now = Date.now()
+          if (gate.name !== lastGateName || now - lastGateHandledAt >= 3000) {
+            if (gate.keys === 'down-enter') {
+              await runtime.sendKeys(sessionName, 'Down', { enter: true })
+            } else {
+              await runtime.sendKeys(sessionName, 'Enter')
+            }
+            lastGateName = gate.name
+            lastGateHandledAt = now
+            console.log(`[Ensemble] Auto-confirmed ${gate.name} in ${sessionName}`)
+          }
+          await new Promise(r => setTimeout(r, 1000))
+          continue
+        }
+        if (output.includes(readyMarker)) {
+          console.log(`[Ensemble] ${sessionName} is ready (${Math.round((Date.now() - start) / 1000)}s)`)
+          return true
+        }
+      }
+    } catch { /* not ready yet */ }
+    await new Promise(r => setTimeout(r, 1000))
+  }
+  console.error(`[Ensemble] ${sessionName} did not become ready within ${maxWait / 1000}s`)
+  return false
+}
+
+
+function teamEvent(team: EnsembleTeam, event: BrainEvent['event'], fields: Partial<BrainEvent> = {}): void {
+  void emitEvent({ event, teamId: team.id, team: team.name, ts: new Date().toISOString(), ...fields })
+}
+
 export async function createEnsembleTeam(
   request: CreateTeamRequest
 ): Promise<ServiceResult<{ team: EnsembleTeam }>> {
+  let plan
+  if (!request.agents?.length) {
+    plan = await runPlan(request.description)
+    if (plan && !plan.agents.every(key => availableAgentKeys().includes(key))) plan = undefined
+    request = { ...request, agents: (plan?.agents ?? ['codex', 'claude code']).map((program, i) => ({ program, role: i === 0 ? 'lead' : 'worker' })), templateName: request.templateName || plan?.template }
+  }
+  const specs = request.agents!
   // Reject unknown agents before creating anything. The caller named these
   // explicitly, so silently substituting claude would hand back a team that
   // looks right and is not: two identical models where two different ones were
   // asked for. Cheaper to fail here than to discover it halfway a review.
-  const unknown = request.agents
+  const unknown = specs
     .map(spec => resolveAgentProgramDetailed(spec.program))
     .filter(resolution => resolution.how === 'fallback')
   if (unknown.length > 0) {
@@ -733,12 +828,28 @@ export async function createEnsembleTeam(
   const cwd = request.workingDirectory || process.cwd()
   const worktreeMap = new Map<string, WorktreeInfo>()
 
+  if (plan) appendMessage(team.id, {
+    id: uuidv4(), teamId: team.id, from: 'ensemble', to: 'team', type: 'chat', timestamp: new Date().toISOString(),
+    content: `Brain plan: ${plan.agents.join(', ')}; template: ${request.templateName || 'default'}; reason: ${plan.reason || 'not provided'}`,
+  })
+  if (request.worktree === 'team') {
+    try {
+      const shared = await createTeamWorktree(team.id, cwd)
+      team.worktreePath = shared.path
+      team.worktreeBranch = shared.branch
+      updateTeam(team.id, { worktreePath: shared.path, worktreeBranch: shared.branch })
+    } catch (error) {
+      updateTeam(team.id, { status: 'failed' })
+      return { status: 400, error: error instanceof Error ? error.message : String(error) }
+    }
+  }
+
   // Phase 0: Create worktrees for local agents if requested
-  if (request.useWorktrees) {
+  if (request.useWorktrees && request.worktree !== 'team') {
     for (let i = 0; i < team.agents.length; i++) {
       const agentSpec = team.agents[i]
-      const hostId = request.agents[i].hostId
-        ? (getHostById(request.agents[i].hostId!) ? request.agents[i].hostId! : getSelfHostId())
+      const hostId = specs[i].hostId
+        ? (getHostById(specs[i].hostId!) ? specs[i].hostId! : getSelfHostId())
         : getSelfHostId()
 
       // Only create worktrees for local agents
@@ -789,7 +900,7 @@ export async function createEnsembleTeam(
   // Phase 1: Spawn all agents
   for (let i = 0; i < team.agents.length; i++) {
     const agentSpec = team.agents[i]
-    const hostId = await routeToHost(agentSpec.program, request.agents[i].hostId)
+    const hostId = await routeToHost(agentSpec.program, specs[i].hostId)
     const agentName = `${team.name}-${agentSpec.name}`
     const prompt = buildPrompt(agentSpec.name, team.agents.filter((_, j) => j !== i).map(a => a.name), i)
 
@@ -803,7 +914,11 @@ export async function createEnsembleTeam(
       console.log(`[Ensemble] Spawning ${agentName} (${agentSpec.program}) on ${hostId} (self=${isSelf(hostId)})`)
 
       if (isSelf(hostId)) {
-        const agentCwd = worktreeMap.get(agentSpec.name)?.path || cwd
+        const agentCwd = team.worktreePath || worktreeMap.get(agentSpec.name)?.path || cwd
+        if (team.worktreePath) {
+          agentSpec.worktreePath = team.worktreePath
+          agentSpec.worktreeBranch = team.worktreeBranch
+        }
         const spawned = await spawnLocalAgent({
           name: agentName,
           program: agentSpec.program,
@@ -843,6 +958,7 @@ export async function createEnsembleTeam(
       const message = err instanceof Error ? err.message : String(err)
       console.error(`[Ensemble] Failed to spawn ${agentName}:`, message)
       team.agents[i].status = 'idle'
+      teamEvent(team, 'agent_failed', { agent: agentSpec.name, detail: message })
       appendMessage(team.id, {
         id: uuidv4(), teamId: team.id, from: 'ensemble', to: 'team',
         content: `Failed to spawn ${agentName}: ${message}`,
@@ -857,72 +973,14 @@ export async function createEnsembleTeam(
   // van te weigeren met "geen sessieregister" — precies het scenario waarvoor
   // rescue bedoeld is.
 
+  team.status = 'active'
   updateTeam(team.id, { ...team, status: 'active' })
+  teamEvent(team, 'team_started', { agents: team.agents.map(a => a.program), cwd: team.worktreePath || cwd, branch: team.worktreeBranch })
 
   // Phase 2: Wait for ALL agents to be ready, then inject prompts
   const activeAgents = team.agents.filter(a => a.status === 'active')
   if (activeAgents.length > 0) {
     const runtime = getRuntime()
-
-    const waitForReady = async (
-      sessionName: string, program: string, hostId?: string, maxWait = 60000,
-    ): Promise<boolean> => {
-      const start = Date.now()
-      const agentConfig = resolveAgentProgram(program)
-      const readyMarker = agentConfig.readyMarker
-      let lastGateName = ''
-      let lastGateHandledAt = 0
-      while (Date.now() - start < maxWait) {
-        try {
-          if (hostId && !isSelf(hostId)) {
-            const host = getHostById(hostId)
-            if (host && await isRemoteSessionReady(host.url, sessionName)) {
-              console.log(`[Ensemble] ${sessionName} is remotely reachable (${Math.round((Date.now() - start) / 1000)}s)`)
-              return true
-            }
-          } else {
-            // A shell in the foreground means the agent CLI is not (or no
-            // longer) running. Its prompt may even contain the ready marker
-            // (❯), so never treat it as ready and never send keys into it.
-            const foreground = runtime.getForegroundCommand
-              ? await runtime.getForegroundCommand(sessionName)
-              : ''
-            if (isShellCommand(foreground)) {
-              if (Date.now() - start >= AGENT_START_GRACE_MS) {
-                console.error(`[Ensemble] ${sessionName}: agent CLI is not running (${foreground} in foreground)`)
-                return false
-              }
-              await new Promise(r => setTimeout(r, 1000))
-              continue
-            }
-            const output = await runtime.capturePane(sessionName, 50)
-            const gate = detectLiveGate(output)
-            if (gate) {
-              const now = Date.now()
-              if (gate.name !== lastGateName || now - lastGateHandledAt >= 3000) {
-                if (gate.keys === 'down-enter') {
-                  await runtime.sendKeys(sessionName, 'Down', { enter: true })
-                } else {
-                  await runtime.sendKeys(sessionName, 'Enter')
-                }
-                lastGateName = gate.name
-                lastGateHandledAt = now
-                console.log(`[Ensemble] Auto-confirmed ${gate.name} in ${sessionName}`)
-              }
-              await new Promise(r => setTimeout(r, 1000))
-              continue
-            }
-            if (output.includes(readyMarker)) {
-              console.log(`[Ensemble] ${sessionName} is ready (${Math.round((Date.now() - start) / 1000)}s)`)
-              return true
-            }
-          }
-        } catch { /* not ready yet */ }
-        await new Promise(r => setTimeout(r, 1000))
-      }
-      console.error(`[Ensemble] ${sessionName} did not become ready within ${maxWait / 1000}s`)
-      return false
-    }
 
     console.log(`[Ensemble] Waiting for all ${activeAgents.length} agents to be ready...`)
     const readyResults = await Promise.all(
@@ -933,6 +991,7 @@ export async function createEnsembleTeam(
     )
 
     const ready = readyResults.filter(r => r.ready)
+    for (const { agent } of ready) teamEvent(team, 'agent_ready', { agent: agent.name })
     const notReady = readyResults.filter(r => !r.ready)
 
     // Best-effort readiness — Codex CLI in particular often misses the readyMarker
@@ -1184,6 +1243,7 @@ async function writeFailureSummary(
     `Task: ${team.description || 'unknown'}`,
     `Duration: ${duration}`,
     `Messages: 0`,
+    ...(team.worktreePath ? [`Worktree: ${team.worktreePath}`, `Branch: ${team.worktreeBranch}`] : []),
     `Full transcript: ${collabMessagesFile(team.id)}`,
     '',
     stoppedOnTimeLimit ? `RUN STOPPED: ${failureReason}` : 'RUN FAILED: no agent ever posted a message.',
@@ -1267,15 +1327,19 @@ export async function writeDisbandSummary(
   fs.writeFileSync(
     summaryFile,
     `Task: ${team.description || 'unknown'}\nDuration: ${duration}\nMessages: ${agentMsgs.length}\nFull transcript: ${transcriptPointer}`
+      + (team.worktreePath ? `\nWorktree: ${team.worktreePath}\nBranch: ${team.worktreeBranch}` : '')
       + (options.failureReason ? `\nReason: ${options.failureReason}` : '')
       + `\n\n${summaryText}`,
   )
   console.log(`[Ensemble] Summary written to ${summaryFile}`)
 }
 
-export async function disbandTeam(teamId: string, failureReason?: string): Promise<ServiceResult<{ team: EnsembleTeam }>> {
+export async function disbandTeam(teamId: string, failureReason?: string, finishStatus?: 'ok' | 'failed' | 'stopped'): Promise<ServiceResult<{ team: EnsembleTeam }>> {
   const team = getTeam(teamId)
   if (!team) return { error: 'Team not found', status: 404 }
+
+  if (team.status === 'disbanded') return { data: { team }, status: 200 }
+  stopTeamReplacements(teamId)
 
   // Write summary before killing sessions so the Claude Code session can present it
   await writeDisbandSummary(teamId, failureReason ? { failureReason } : {})
@@ -1311,9 +1375,9 @@ export async function disbandTeam(teamId: string, failureReason?: string): Promi
   }
 
   const agentsWithWorktrees = team.agents.filter(
-    a => a.worktreePath && a.worktreeBranch && (!a.hostId || isSelf(a.hostId))
+    a => a.status !== 'replaced' && a.worktreePath && a.worktreeBranch && (!a.hostId || isSelf(a.hostId))
   )
-  if (agentsWithWorktrees.length > 0) {
+  if (team.worktree !== 'team' && agentsWithWorktrees.length > 0) {
     await new Promise(resolve => setTimeout(resolve, 2000))
 
     const firstWorktree = agentsWithWorktrees[0].worktreePath!
@@ -1351,6 +1415,11 @@ export async function disbandTeam(teamId: string, failureReason?: string): Promi
     status: 'disbanded',
     completedAt: new Date().toISOString(),
   })
+
+  const finishedMessages = getMessages(teamId)
+  const remaining = team.agents.filter(a => a.status !== 'failed' && a.status !== 'replaced')
+  const allDone = remaining.length > 0 && remaining.every(a => [...finishedMessages].reverse().find(m => m.from === a.name)?.content.trim() === EXPLICIT_DONE_SENTINEL)
+  teamEvent(team, 'team_finished', { status: finishStatus ?? (failureReason ? (failureReason.startsWith('team stopped on time limit') ? 'stopped' : 'failed') : allDone ? 'ok' : 'stopped'), durationS: Math.max(0, (Date.now() - Date.parse(team.createdAt)) / 1000), branch: team.worktreeBranch, cwd: team.worktreePath || team.workingDirectory, detail: failureReason })
 
   // Soft cleanup: remove ephemeral files, keep messages/summary/log, write .finished marker
   try {

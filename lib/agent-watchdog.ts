@@ -2,7 +2,7 @@ import fs from 'fs'
 import path from 'path'
 import { v4 as uuidv4 } from 'uuid'
 import type { AgentRuntime } from './agent-runtime'
-import type { EnsembleMessage, EnsembleTeam } from '../types/ensemble'
+import type { EnsembleMessage, EnsembleTeam, EnsembleTeamAgent } from '../types/ensemble'
 
 const DEFAULT_POLL_INTERVAL_MS = 30_000
 const DEFAULT_NUDGE_MS = 90_000
@@ -47,6 +47,10 @@ interface AgentWatchdogState {
 }
 
 interface AgentWatchdogDeps {
+  replacementEnabled?: () => boolean
+  sessionExists?: (name: string, hostId?: string) => Promise<boolean>
+  replaceAgent?: (team: EnsembleTeam, agent: EnsembleTeamAgent, detail: string) => Promise<boolean>
+  onAgentStalled?: (team: EnsembleTeam, agent: EnsembleTeamAgent, detail: string) => void
   loadTeams: () => EnsembleTeam[]
   markAgentFailed?: (teamId: string, agentName: string) => void
   getMessages: (teamId: string) => EnsembleMessage[]
@@ -89,6 +93,7 @@ export function getWatchdogMaxNudges(): number {
 }
 
 export class AgentWatchdog {
+  private polling = false
   private readonly state = new Map<string, AgentWatchdogState>()
   private readonly timer: NodeJS.Timeout
   private readonly now: () => number
@@ -111,21 +116,25 @@ export class AgentWatchdog {
   }
 
   async poll(): Promise<void> {
-    const activeTeams = this.deps.loadTeams().filter(team => team.status === 'active')
-    const activeTeamIds = new Set(activeTeams.map(team => team.id))
+    if (this.polling) return
+    this.polling = true
+    try {
+      const activeTeams = this.deps.loadTeams().filter(team => team.status === 'active')
+      const activeTeamIds = new Set(activeTeams.map(team => team.id))
 
-    for (const key of this.state.keys()) {
-      const teamId = key.split(':', 1)[0]
-      if (!activeTeamIds.has(teamId)) this.state.delete(key)
-    }
-
-    for (const team of activeTeams) {
-      try {
-        await this.pollTeam(team)
-      } catch (err) {
-        console.error(`[Watchdog] Poll failed for team ${team.id}:`, err)
+      for (const key of this.state.keys()) {
+        const teamId = key.split(':', 1)[0]
+        if (!activeTeamIds.has(teamId)) this.state.delete(key)
       }
-    }
+
+      await Promise.all(activeTeams.map(async team => {
+        try {
+          await this.pollTeam(team)
+        } catch (err) {
+          console.error(`[Watchdog] Poll failed for team ${team.id}:`, err)
+        }
+      }))
+    } finally { this.polling = false }
   }
 
   stop(): void {
@@ -151,7 +160,11 @@ export class AgentWatchdog {
         this.state.delete(stateKey)
         continue
       }
-      const lastMessageAt = lastAgentMessage?.timestamp || team.createdAt
+      if (this.deps.replacementEnabled?.() && this.deps.sessionExists && !await this.deps.sessionExists(`${team.name}-${agent.name}`, agent.hostId)) {
+        await this.handleStall(team, agent, 'Agent session disappeared')
+        continue
+      }
+      const lastMessageAt = lastAgentMessage?.timestamp || agent.startedAt || team.createdAt
       const previousState = this.state.get(stateKey)
 
       if (!previousState) {
@@ -212,6 +225,7 @@ export class AgentWatchdog {
           const givingUp = failedNudges >= this.maxFailedNudges
 
           if (givingUp) {
+            this.deps.onAgentStalled?.(team, agent, reason)
             // Keep the roster truthful. Failed agents must not block sentinel
             // completion or idle fallback for the agents that remain alive.
             agent.status = 'failed'
@@ -256,6 +270,11 @@ export class AgentWatchdog {
       const nudgedMs = new Date(currentState.nudgedAt).getTime()
       if (Number.isNaN(nudgedMs) || nowMs - nudgedMs < this.stallAfterMs) continue
 
+      if (this.deps.replacementEnabled?.()) {
+        await this.handleStall(team, agent, 'Agent stalled after watchdog nudge')
+        continue
+      }
+      this.deps.onAgentStalled?.(team, agent, 'Agent stalled after watchdog nudge')
       console.warn(`[Watchdog] Agent ${agent.name} in team ${team.id} stalled after watchdog nudge`)
       this.deps.appendMessage(team.id, {
         id: uuidv4(),
@@ -271,6 +290,21 @@ export class AgentWatchdog {
         stalledAt: new Date(nowMs).toISOString(),
       })
     }
+  }
+
+  private async handleStall(team: EnsembleTeam, agent: EnsembleTeamAgent, detail: string): Promise<void> {
+    this.deps.onAgentStalled?.(team, agent, detail)
+    if (await this.deps.replaceAgent?.(team, agent, detail)) {
+      agent.status = 'replaced'
+      const refreshed = this.deps.loadTeams().find(candidate => candidate.id === team.id)
+      if (refreshed) team.agents = refreshed.agents
+      this.state.delete(`${team.id}:${agent.name}`)
+      return
+    }
+    agent.status = 'failed'
+    this.deps.markAgentFailed?.(team.id, agent.name)
+    this.deps.appendMessage(team.id, { id: uuidv4(), teamId: team.id, from: 'ensemble', to: 'team', type: 'chat', timestamp: new Date(this.now()).toISOString(), content: `Agent ${agent.name} failed: ${detail}; no replacement available` })
+    await this.reportIfTeamUnreachable(team)
   }
 
   /**

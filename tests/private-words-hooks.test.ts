@@ -42,6 +42,27 @@ it('blocks a private word in the staged version and reports its file and line', 
   expect(result.stderr.toLowerCase()).not.toContain('secret client')
 })
 
+it('allows an unchanged private word but blocks one on a newly added line during commit', () => {
+  const words = list('Secret Client\n')
+  const file = path.join(repo, 'example.txt')
+  fs.writeFileSync(file, 'Secret Client is already here\n')
+  expect(run('git', ['add', 'example.txt']).status).toBe(0)
+  expect(run('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'initial']).status).toBe(0)
+  expect(run('git', ['config', 'core.hooksPath', hooks]).status).toBe(0)
+
+  fs.appendFileSync(file, 'A clean new line\n')
+  expect(run('git', ['add', 'example.txt']).status).toBe(0)
+  const env = { ENSEMBLE_PRIVE_WOORDEN: words }
+  expect(run('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'clean addition'], env).status).toBe(0)
+
+  fs.appendFileSync(file, '++ Secret Client reference\n')
+  expect(run('git', ['add', 'example.txt']).status).toBe(0)
+  const blocked = run('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'private addition'], env)
+  expect(blocked.status).toBe(1)
+  expect(blocked.stderr).toContain('example.txt:3: privé-woord nr 1 uit je lijst')
+  expect(blocked.stderr.toLowerCase()).not.toContain('secret client')
+})
+
 it('blocks a private word in a commit message without printing the word', () => {
   const words = list('Secret Client\n')
   const message = path.join(repo, 'message.txt')

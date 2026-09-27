@@ -40,6 +40,7 @@ Any CLI-based coding agent can be a team member. These ship in `agents.json`:
 | **Grok** | Tested in three-agent teams | Needs the project-picker hint, see [Configuration](configuration#supported-agents) |
 | **GLM** | Tested in four-agent teams | Claude Code pointed at the Z.ai endpoint, so a GLM model joins as a regular agent |
 | **Antigravity CLI (`agy`)** | Configured | Uses subscription authentication |
+| **MiMo Code CLI (`mimo`)** | Configured | Uses file-based prompt delivery |
 | **Gemini CLI** | Legacy | Configuration retained |
 | **opencode** | Untested | Config included, not battle-tested |
 | **Any CLI tool** | Custom | [Add your own](configuration#adding-a-custom-agent) |

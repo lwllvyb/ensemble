@@ -27,7 +27,7 @@ const hasShell = (sh: string) => { try { execFileSync(sh, ['-c', 'true']); retur
 describe('startcommando', () => {
   afterEach(() => { delete process.env.ENSEMBLE_TEST_TRICKY; sent.length = 0 })
 
-  it.each(['claude', 'codex', 'grok', 'glm', 'gemini', 'agy'])('%s: bevat geen taaktekst en is geldige shellsyntax', async program => {
+  it.each(['claude', 'codex', 'grok', 'glm', 'gemini', 'agy', 'mimo'])('%s: bevat geen taaktekst en is geldige shellsyntax', async program => {
     process.env.ENSEMBLE_TEST_TRICKY = TRICKY
     await spawnLocalAgent({ name: `t-${program}-1`, program, workingDirectory: "/tmp/map met spatie en 'quote'" })
     const cmd = sent[0]

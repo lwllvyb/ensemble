@@ -8,16 +8,22 @@ export interface EnsembleTeam {
   createdAt: string
   completedAt?: string
   feedMode: 'silent' | 'summary' | 'live'
+  workingDirectory?: string
+  worktree?: 'team'
+  worktreePath?: string
+  worktreeBranch?: string
+  replacementCount?: number
   result?: EnsembleTeamResult
 }
 
 export interface EnsembleTeamAgent {
+  startedAt?: string
   agentId: string
   name: string
   program: string
   role: string
   hostId: string
-  status: 'spawning' | 'active' | 'idle' | 'done' | 'failed'
+  status: 'spawning' | 'active' | 'idle' | 'done' | 'failed' | 'replaced'
   worktreePath?: string
   worktreeBranch?: string
 }
@@ -44,7 +50,7 @@ export interface EnsembleMessage {
 export interface CreateTeamRequest {
   name: string
   description: string
-  agents: Array<{
+  agents?: Array<{
     program: string
     role?: string
     hostId?: string
@@ -52,6 +58,7 @@ export interface CreateTeamRequest {
   feedMode?: 'silent' | 'summary' | 'live'
   workingDirectory?: string
   templateName?: string
+  worktree?: 'team'
   useWorktrees?: boolean
   staged?: boolean
   stagedConfig?: StagedWorkflowConfig

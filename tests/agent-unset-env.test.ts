@@ -43,3 +43,8 @@ it('accepts uppercase names, underscores and digits, and empty or absent lists',
   vi.stubEnv('ENSEMBLE_AGENTS_CONFIG', file)
   expect(loadAgentsConfig()).toEqual(config)
 })
+
+it('loads the MiMo CLI contract', () => {
+  vi.stubEnv('ENSEMBLE_AGENTS_CONFIG', path.resolve('agents.json'))
+  expect(loadAgentsConfig().mimo).toEqual({ name: 'mimo', command: 'mimo', flags: ['--trust', '--dangerously-skip-permissions'], readyMarker: 'Type your message', inputMethod: 'pasteFromFile', color: 'cyan', icon: '◇' })
+})
