@@ -55,7 +55,7 @@ if [ -f "$PRIVATE_WORDS" ]; then
       [ -n "$file" ] || continue
       while IFS= read -r line_number; do
         note "$file:$line_number: privé-woord nr $word_number uit je lijst"
-      done < <(git diff --cached -U0 --no-ext-diff -- "$file" | ENSEMBLE_NEEDLE="$word" awk '
+      done < <(git diff --cached -U0 --text --no-ext-diff -- "$file" | LC_ALL=C tr -d '\000' | ENSEMBLE_NEEDLE="$word" awk '
         BEGIN { needle = tolower(ENVIRON["ENSEMBLE_NEEDLE"]) }
         /^@@ / {
           match($0, /\+[0-9]+/)
