@@ -92,10 +92,11 @@ with `COLLAB_HERDR_MODE=split|tab`, or the iTerm layout with
 
 **Agent selection (3rd argument, optional).** Comma-separated keys from `agents.json`;
 the first one becomes lead. Default when omitted: `codex` (lead) + `claude code` (worker).
-Available keys: `codex`, `claude`, `grok`, `agy`, `glm`, `opencode`. (`gemini` is still in `agents.json` but does not work: gemini-cli was uninstalled on 27-09-2026, so never pass it.) The listed keys are the working ones
-actually present in `agents.json`. An unknown key is not an error: `resolveAgentProgram()`
+Available keys in `agents.json`: `codex`, `claude`, `grok`, `agy`, `gemini`, `glm`,
+`opencode`. When configured, `healthCommand` checks which agents are currently usable
+and catches an unavailable CLI before launch. An unknown key is not an error: `resolveAgentProgram()`
 falls back to `claude`, so a typo silently spawns a second claude instead of failing.
-Only pass this when the user explicitly names agents in the task ("laat agy en claude…").
+Only pass this when the user explicitly names agents in the task (for example, "use agy and claude").
 Preflight checks only the CLIs you name here, so a codex quota wall does not block a
 `grok,claude` run. Naming agents explicitly also disables the auto-fallback: a dead agent
 becomes a hard failure instead of a silent swap.

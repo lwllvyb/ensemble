@@ -13,3 +13,22 @@ if grep -q '^Claude-Session:' "$MSG_FILE"; then
   mv "$MSG_FILE.tmp" "$MSG_FILE"
   echo "commit-msg hook: removed a Claude-Session trailer (public repo)" >&2
 fi
+
+PRIVATE_WORDS=${ENSEMBLE_PRIVE_WOORDEN:-$HOME/.config/ensemble/prive-woorden.txt}
+if [ -f "$PRIVATE_WORDS" ]; then
+  failed=0
+  word_number=0
+  while IFS= read -r word || [ -n "$word" ]; do
+    word=${word%$'\r'}
+    [[ "$word" =~ ^[[:space:]]*$ || "$word" == \#* ]] && continue
+    word_number=$((word_number + 1))
+    while IFS= read -r line_number; do
+      printf 'commit-msg: commit message:%s: privé-woord nr %s uit je lijst\n' "$line_number" "$word_number" >&2
+      failed=1
+    done < <(ENSEMBLE_NEEDLE="$word" awk '
+      BEGIN { needle = tolower(ENVIRON["ENSEMBLE_NEEDLE"]) }
+      index(tolower($0), needle) { print NR }
+    ' "$MSG_FILE")
+  done < "$PRIVATE_WORDS"
+  [ "$failed" -eq 0 ] || exit 1
+fi

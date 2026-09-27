@@ -43,10 +43,30 @@ while IFS= read -r file; do
   fi
 done <<< "$STAGED"
 
+# 3. Optional private words, checked against the staged version of each file.
+PRIVATE_WORDS=${ENSEMBLE_PRIVE_WOORDEN:-$HOME/.config/ensemble/prive-woorden.txt}
+if [ -f "$PRIVATE_WORDS" ]; then
+  word_number=0
+  while IFS= read -r word || [ -n "$word" ]; do
+    word=${word%$'\r'}
+    [[ "$word" =~ ^[[:space:]]*$ || "$word" == \#* ]] && continue
+    word_number=$((word_number + 1))
+    while IFS= read -r file; do
+      [ -n "$file" ] || continue
+      while IFS= read -r line_number; do
+        note "$file:$line_number: privé-woord nr $word_number uit je lijst"
+      done < <(git show ":$file" 2>/dev/null | ENSEMBLE_NEEDLE="$word" awk '
+        BEGIN { needle = tolower(ENVIRON["ENSEMBLE_NEEDLE"]) }
+        index(tolower($0), needle) { print NR }
+      ')
+    done <<< "$STAGED"
+  done < "$PRIVATE_WORDS"
+fi
+
 if [ "$FAILED" -ne 0 ]; then
   cat >&2 <<'MSG'
 
-Nothing was committed. Remove the file or the link, then commit again.
+Nothing was committed. Remove the flagged content, then commit again.
 This repository is public and its forks share an object store, so a pushed
 transcript cannot be taken back, only apologised for.
 

@@ -25,11 +25,15 @@ npm run monitor   # Launch TUI monitor
 git config core.hooksPath .githooks
 ```
 
-Two hooks, both about the same thing: **no AI session transcript ever enters this repository.**
+The hooks keep AI session transcripts and personal details out of this public repository.
 
 - `commit-msg` strips `Claude-Session:` trailers, which some AI harnesses append automatically
 - `pre-commit` refuses a commit that stages a transcript file, or any file containing a
   `claude.ai/code/session_...` link
+- Both hooks optionally check private words in staged files and commit messages. Set
+  `ENSEMBLE_PRIVE_WOORDEN` to a file outside the repository, or use the default
+  `~/.config/ensemble/prive-woorden.txt`. Put one word or phrase per line. Blank lines and
+  lines starting with `#` are ignored. Keep personal names and paths out of commits.
 
 A transcript is a full record of a working session. It can contain paths, hostnames, customer
 names, credentials read aloud and half-finished reasoning that nobody reviewed for publication.
