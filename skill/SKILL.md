@@ -92,10 +92,10 @@ with `COLLAB_HERDR_MODE=split|tab`, or the iTerm layout with
 
 **Agent selection (3rd argument, optional).** Comma-separated keys from `agents.json`;
 the first one becomes lead. Default when omitted: `codex` (lead) + `claude code` (worker).
-Available keys: `codex`, `claude`, `grok`, `gemini`, `glm`, `opencode`. These are the keys
+Available keys: `codex`, `claude`, `grok`, `agy`, `gemini`, `glm`, `opencode`. These are the keys
 actually present in `agents.json`. An unknown key is not an error: `resolveAgentProgram()`
 falls back to `claude`, so a typo silently spawns a second claude instead of failing.
-Only pass this when the user explicitly names agents in the task ("laat gemini en claude…").
+Only pass this when the user explicitly names agents in the task ("laat agy en claude…").
 Preflight checks only the CLIs you name here, so a codex quota wall does not block a
 `grok,claude` run. Naming agents explicitly also disables the auto-fallback: a dead agent
 becomes a hard failure instead of a silent swap.

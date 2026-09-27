@@ -11,7 +11,7 @@ Ensemble orchestrates AI agents into collaborative teams. Out of the box it pair
 
 > **Status:** Experimental developer tool. Not a production framework (yet).
 >
-> **Default team:** Codex (lead) + Claude Code (worker). You can [add other agents](configuration#supported-agents) like Grok, GLM, Gemini (experimental) or any custom CLI tool, and run teams of three.
+> **Default team:** Codex (lead) + Claude Code (worker). You can [add other agents](configuration#supported-agents) like Grok, GLM, Antigravity CLI (`agy`) or any custom CLI tool, and run teams of three.
 
 ---
 
@@ -39,7 +39,8 @@ Any CLI-based coding agent can be a team member. These ship in `agents.json`:
 | **Claude Code** | Fully tested, default worker | Anthropic Claude Code |
 | **Grok** | Tested in three-agent teams | Needs the project-picker hint, see [Configuration](configuration#supported-agents) |
 | **GLM** | Tested in four-agent teams | Claude Code pointed at the Z.ai endpoint, so a GLM model joins as a regular agent |
-| **Gemini CLI** | Experimental | May stall on free-tier rate limits |
+| **Antigravity CLI (`agy`)** | Configured | Uses subscription authentication |
+| **Gemini CLI** | Legacy | Configuration retained |
 | **opencode** | Untested | Config included, not battle-tested |
 | **Any CLI tool** | Custom | [Add your own](configuration#adding-a-custom-agent) |
 

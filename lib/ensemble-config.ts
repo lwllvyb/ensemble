@@ -35,7 +35,7 @@ export function readEnsembleConfig(): EnsembleConfig {
     }
   }
   const value = (key: string, env: string): unknown => process.env[env]?.trim() ? process.env[env] : file[key]
-  const config: EnsembleConfig = { fallbackOrder: ['codex', 'claude', 'glm', 'grok', 'gemini'], graceMinutes: 3, alertHubUrl: '' }
+  const config: EnsembleConfig = { fallbackOrder: ['codex', 'claude', 'glm', 'grok', 'agy', 'gemini'], graceMinutes: 3, alertHubUrl: '' }
   const alertHubUrl = process.env.ENSEMBLE_ALERT_HUB_URL ?? file.alertHubUrl
   if (typeof alertHubUrl === 'string') config.alertHubUrl = alertHubUrl.trim()
   const health = value('healthCommand', 'ENSEMBLE_HEALTH_CMD')

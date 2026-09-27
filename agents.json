@@ -17,6 +17,16 @@
     "color": "green",
     "icon": "●"
   },
+  "agy": {
+    "name": "agy",
+    "command": "agy",
+    "flags": ["--dangerously-skip-permissions"],
+    "readyMarker": "? for shortcuts",
+    "inputMethod": "sendKeys",
+    "color": "red",
+    "icon": "▲",
+    "unsetEnv": ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
+  },
   "gemini": {
     "name": "gemini",
     "command": "gemini",

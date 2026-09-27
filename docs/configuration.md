@@ -123,6 +123,7 @@ The default team is **Codex (lead) + Claude Code (worker)**. This is the fully t
 | **Codex** | Fully tested | Yes (lead) | Uses `pasteFromFile` input, `--dangerously-bypass-approvals-and-sandbox` flag |
 | **Claude Code** | Fully tested | Yes (worker) | Uses `sendKeys` input |
 | **Grok CLI** | Tested in three-agent teams | No | Uses `pasteFromFile`, `--always-approve --trust`. Needs `hints = { project_picker_disabled = true }` in `~/.grok/config.toml`, otherwise the agent hangs on a directory picker in a fresh pane. |
+| **Antigravity CLI (`agy`)** | Configured | No | Uses `sendKeys`, `--dangerously-skip-permissions`, and unsets `GEMINI_API_KEY` and `GOOGLE_API_KEY` before launch. |
 | **Gemini CLI** | Experimental | No | Uses `pasteFromFile`, `--yolo` flag. May stop responding due to free-tier rate limits or internal TUI issues. Use a paid API key (`gemini /auth`) for best results. |
 | **GLM** | Tested in four-agent teams | No | Runs Claude Code against the Z.ai endpoint, so it behaves like `claude` (`sendKeys`, `--permission-mode auto`) with a GLM model underneath. Needs a `glm` command on PATH that sets `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN`. |
 | **opencode** | Untested | No | Basic config included in `agents.json`, `sendKeys` input |
@@ -134,10 +135,10 @@ You don't need to change any config. Just tell ensemble which agents you want:
 
 ```bash
 # Via collab-launch.sh (first agent = lead, rest = workers)
-./scripts/collab-launch.sh "$(pwd)" "Security audit" codex,claude,gemini
+./scripts/collab-launch.sh "$(pwd)" "Security audit" codex,claude,agy
 
 # Via /collab in Claude Code — name the agents in your prompt
-/collab "Review auth with gemini and claude"
+/collab "Review auth with agy and claude"
 
 # Via API — specify the agents array
 ```
@@ -338,3 +339,10 @@ These flags are acceptable in the ensemble context because:
 - You can monitor agent behavior live via the TUI and message feed
 
 If you add custom agents, grant only the minimum flags required for autonomous operation.
+
+`unsetEnv` is an optional array in each `agents.json` entry. Names must match
+`[A-Z_][A-Z0-9_]*`; invalid entries reject the configuration. The spawner unsets
+these variables after environment exports, including `agentEnv`, before launching
+the CLI. For agy this prevents inherited API keys from selecting paid API tokens
+instead of subscription authentication. Its trust prompt uses the existing startup
+gate, which confirms the preselected "Yes, I trust this folder" option.

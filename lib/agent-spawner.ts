@@ -10,7 +10,7 @@ import { fileURLToPath } from 'url'
 import { readEnsembleConfig } from './ensemble-config'
 import { getRuntime } from './agent-runtime'
 import { getSelfHostId } from './hosts-config'
-import { buildAgentCommandParts, shellEscape } from './agent-config'
+import { buildAgentCommandParts, resolveAgentProgram, shellEscape } from './agent-config'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(__dirname, '..')
@@ -69,6 +69,8 @@ export async function spawnLocalAgent(options: SpawnAgentOptions): Promise<Spawn
   const cwd = options.workingDirectory || process.cwd()
   const hostId = options.hostId || getSelfHostId()
 
+  const unsetEnv = resolveAgentProgram(options.program).unsetEnv ?? []
+
   // Create tmux session
   await runtime.createSession(sessionName, cwd)
 
@@ -89,9 +91,11 @@ export async function spawnLocalAgent(options: SpawnAgentOptions): Promise<Spawn
     .map(([k, v]) => `export ${k}=${shellEscape(v as string)}`)
     .join('; ')
   const envPrefix = envForward ? `${envForward}; ` : ''
+  // Unset after exports so agentEnv cannot restore excluded credentials.
+  const unsetPrefix = unsetEnv.length ? `unset ${unsetEnv.join(' ')}; ` : ''
 
   // Use 'nocorrect' to prevent zsh auto-correct prompt, and add leading space to avoid tmux swallowing first char
-  await runtime.sendKeys(sessionName, ` nocorrect unset CLAUDECODE; ${envPrefix}${startCommand}`, { literal: true, enter: true })
+  await runtime.sendKeys(sessionName, ` nocorrect unset CLAUDECODE; ${envPrefix}${unsetPrefix}${startCommand}`, { literal: true, enter: true })
 
   console.log(`[Spawner] Agent ${options.name} started in tmux session ${sessionName}`)
 

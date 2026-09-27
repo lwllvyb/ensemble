@@ -102,7 +102,8 @@ The default team is **Codex (lead) + Claude Code (worker)**. This is the tested,
 | **Codex + Claude Code** | Fully tested | Default, just run `/collab` or `collab-launch.sh` |
 | **Grok CLI** | Tested in three-agent teams | Add explicitly (see below) |
 | **GLM** | Tested in four-agent teams | Add explicitly (see below) |
-| **Gemini CLI** | Experimental | Add explicitly (see below) |
+| **Antigravity CLI (`agy`)** | Configured | Add explicitly (see below) |
+| **Gemini CLI** | Legacy | Configuration retained |
 | **opencode** | Untested | Add explicitly (see below) |
 | **Any CLI tool** | Via `agents.json` | [Add a custom agent](https://michelhelsdingen.github.io/ensemble/configuration#adding-a-custom-agent) |
 
@@ -112,7 +113,7 @@ Four ways to change which agents are on your team:
 
 **1. Name them in your `/collab` prompt:**
 ```
-/collab "Review the auth module with gemini and claude"
+/collab "Review the auth module with agy and claude"
 ```
 
 **2. Pass them as the third argument to `collab-launch.sh`:**
@@ -143,13 +144,13 @@ curl -X POST http://localhost:23000/api/ensemble/teams \
     "agents": [
       { "program": "codex", "role": "lead" },
       { "program": "claude", "role": "worker" },
-      { "program": "gemini", "role": "worker" }
+      { "program": "agy", "role": "worker" }
     ],
     "workingDirectory": "'$(pwd)'"
   }'
 ```
 
-> **Note on Gemini:** Gemini CLI can join teams and send messages, but is experimental. It may stop responding due to free-tier rate limits or internal agent delegation issues in Gemini's TUI. For best results, configure a paid API key via `gemini /auth`.
+> **Antigravity CLI (`agy`):** Starts with `--dangerously-skip-permissions` and receives prompts through `sendKeys`. Ensemble unsets `GEMINI_API_KEY` and `GOOGLE_API_KEY` after all environment exports so agy uses subscription authentication rather than paid API tokens. In an untrusted directory, the existing startup gate confirms the preselected "Yes, I trust this folder" option. Gemini CLI configuration remains available for existing setups.
 
 ## How It Works
 
@@ -194,7 +195,7 @@ Environment variables override file values. Missing or invalid settings use defa
 |---|---|---|
 | `alertHubUrl` | `ENSEMBLE_ALERT_HUB_URL` | Empty (hub alerts disabled) |
 | `healthCommand` | `ENSEMBLE_HEALTH_CMD` | No hook |
-| `fallbackOrder` | `ENSEMBLE_FALLBACK_ORDER` (comma-separated) | `["codex","claude","glm","grok","gemini"]` |
+| `fallbackOrder` | `ENSEMBLE_FALLBACK_ORDER` (comma-separated) | `["codex","claude","glm","grok","agy","gemini"]` |
 | `maxTeamMinutes` | `ENSEMBLE_MAX_TEAM_MINUTES` | No time limit |
 | `graceMinutes` | `ENSEMBLE_GRACE_MINUTES` | `3` |
 | `agentEnv` | None | No additional variables |

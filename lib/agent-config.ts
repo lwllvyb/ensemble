@@ -41,7 +41,16 @@ export function loadAgentsConfig(): AgentsConfig {
   if (_cache && configPath === _cachePath && mtimeMs === _cacheMtimeMs) return _cache
 
   const raw = fs.readFileSync(configPath, 'utf-8')
-  _cache = JSON.parse(raw) as AgentsConfig
+  const config = JSON.parse(raw) as AgentsConfig
+  for (const [key, agent] of Object.entries(config)) {
+    if (agent.unsetEnv !== undefined && (
+      !Array.isArray(agent.unsetEnv)
+      || !agent.unsetEnv.every(name => typeof name === 'string' && /^[A-Z_][A-Z0-9_]*$/.test(name) && !/[\r\n]/.test(name))
+    )) {
+      throw new Error(`Invalid unsetEnv for agent "${key}": expected uppercase environment variable names`)
+    }
+  }
+  _cache = config
   _cacheMtimeMs = mtimeMs
   _cachePath = configPath
   return _cache

@@ -10,6 +10,8 @@ export interface AgentProgram {
   command: string
   /** Default flags appended to the command (e.g. ["-m", "gpt-5.4"]) */
   flags: string[]
+  /** Environment variable names to unset in the pane before launching */
+  unsetEnv?: string[]
   /** String that appears in tmux pane when agent is ready for input */
   readyMarker: string
   /** How to deliver multi-line prompts */

@@ -43,7 +43,7 @@ const agents = JSON.parse(read('agents.json')) as AgentsConfig
 describe('docs match agents.json', () => {
   it('documents the real flags for every agent the docs name', () => {
     const config = read('docs/configuration.md')
-    for (const key of ['codex', 'claude', 'grok']) {
+    for (const key of ['codex', 'claude', 'grok', 'agy']) {
       for (const flag of agents[key].flags) {
         expect(
           config,
@@ -63,6 +63,8 @@ describe('docs match agents.json', () => {
       const lines = read(rel).split('\n')
       lines.forEach((line, i) => {
         for (const flag of removed) {
+          // This flag remains valid for agy; its removal was specific to Claude.
+          if (flag === '--dangerously-skip-permissions' && /\bagy\b/i.test(line) && !/\bclaude\b/i.test(line)) continue
           if (line.includes(flag) && !explains.test(line)) {
             throw new Error(
               `${rel}:${i + 1} presents ${flag} without saying it was removed:\n  ${line.trim()}`,

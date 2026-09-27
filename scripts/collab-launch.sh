@@ -22,7 +22,7 @@ source "$SCRIPT_DIR/collab-paths.sh"
 
 CWD="${1:-.}"
 TASK="${2:?Usage: collab-launch.sh <cwd> <task> [agents] [template]}"
-# Optional: comma-separated agent names (e.g. "gemini,claude"). Falls back to
+# Optional: comma-separated agent names (e.g. "agy,claude"). Falls back to
 # COLLAB_AGENTS so a preferred line-up can be set once in the shell instead of
 # being retyped every run; collab-preflight.sh already reads the same variable.
 # Precedence: 3rd argument > COLLAB_AGENTS > the service default (codex+claude).

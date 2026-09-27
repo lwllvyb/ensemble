@@ -30,7 +30,7 @@ echo "  node $(node --version), npm $(npm --version)"
 apt-get update -qq > /dev/null 2>&1
 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git tmux python3 curl > /dev/null 2>&1
 echo "  tmux $(tmux -V), python $(python3 --version | cut -d' ' -f2), git $(git --version | cut -d' ' -f3)"
-for cli in claude codex grok gemini; do
+for cli in claude codex grok agy; do
   command -v "$cli" > /dev/null 2>&1 && echo "  $cli: present (unexpected)" || echo "  $cli: absent, like any fresh machine"
 done
 

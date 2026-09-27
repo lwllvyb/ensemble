@@ -13,7 +13,7 @@ function config(value: unknown) {
 }
 it('uses optional defaults when the file is absent', () => {
   vi.stubEnv('ENSEMBLE_CONFIG', path.join(root, 'missing'))
-  expect(readEnsembleConfig()).toEqual({ fallbackOrder: ['codex', 'claude', 'glm', 'grok', 'gemini'], graceMinutes: 3, alertHubUrl: '' })
+  expect(readEnsembleConfig()).toEqual({ fallbackOrder: ['codex', 'claude', 'glm', 'grok', 'agy', 'gemini'], graceMinutes: 3, alertHubUrl: '' })
 })
 it('reads every setting and gives environment values precedence', () => {
   config({ healthCommand: 'check', fallbackOrder: ['glm'], maxTeamMinutes: 40, graceMinutes: 4, taskPreamble: 'Be concise.' })
@@ -27,7 +27,7 @@ it('reads every setting and gives environment values precedence', () => {
 })
 it('ignores invalid settings without disabling valid ones', () => {
   config({ healthCommand: 42, fallbackOrder: [false], maxTeamMinutes: -1, graceMinutes: 'bad', taskPreamble: 'Keep tests.', alertHubUrl: '' })
-  expect(readEnsembleConfig()).toEqual({ fallbackOrder: ['codex', 'claude', 'glm', 'grok', 'gemini'], graceMinutes: 3, taskPreamble: 'Keep tests.', alertHubUrl: '' })
+  expect(readEnsembleConfig()).toEqual({ fallbackOrder: ['codex', 'claude', 'glm', 'grok', 'agy', 'gemini'], graceMinutes: 3, taskPreamble: 'Keep tests.', alertHubUrl: '' })
 })
 it('warns and uses defaults for invalid JSON', () => {
   config({})

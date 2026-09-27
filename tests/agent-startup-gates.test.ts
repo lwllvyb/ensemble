@@ -34,6 +34,11 @@ const CLAUDE_READY_TAIL = [
 ].join('\n')
 
 describe('detectLiveGate', () => {
+  it('bevestigt de agy-trustvraag met de voorgeselecteerde Yes-optie', () => {
+    const pane = 'Do you trust the contents of this project?\n> Yes, I trust this folder'
+    expect(detectLiveGate(pane)).toEqual({ name: 'trust prompt', keys: 'enter' })
+  })
+
   it('kiest "Yes, I trust this folder" als de cursor op "No, exit" staat', () => {
     expect(detectLiveGate(CLAUDE_TRUST_NO_SELECTED)).toEqual({ name: 'trust prompt', keys: 'down-enter' })
   })

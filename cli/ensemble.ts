@@ -336,7 +336,7 @@ switch (cmd) {
     ${c.bWhite}q${c.r}       Quit
 
   ${c.bold}Examples:${c.r}
-    ${c.dim}ensemble run "refactor auth module" --agents gemini,claude${c.r}
+    ${c.dim}ensemble run "refactor auth module" --agents agy,claude${c.r}
     ${c.dim}ensemble run "fix all lint errors" --timeout 300${c.r}
     ${c.dim}ensemble monitor --latest${c.r}
     ${c.dim}ensemble steer abc123 "focus on security review"${c.r}

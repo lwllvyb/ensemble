@@ -85,6 +85,7 @@ const agentStyles: Record<string, AgentStyle> = {
 }
 
 const programColorStyles: Record<string, Omit<AgentStyle, 'icon'>> = {
+  red: { badge: `${color.bgRed}${color.brightWhite}`, text: color.brightRed },
   blue: { badge: `${color.bgBlue}${color.brightWhite}`, text: color.brightBlue },
   green: { badge: `${color.bgGreen}${color.brightWhite}`, text: color.brightGreen },
   magenta: { badge: `${color.bgMagenta}${color.brightWhite}`, text: color.brightMagenta },
